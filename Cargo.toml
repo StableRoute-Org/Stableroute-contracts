@@ -1,0 +1,20 @@
+[package]
+name = "stableroute-contracts"
+version = "0.1.0"
+edition = "2021"
+description = "StableRoute Soroban smart contracts for Stellar liquidity routing"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "25.3"
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3", features = ["testutils"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
