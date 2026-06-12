@@ -475,7 +475,9 @@ impl StableRouteRouter {
         }
         env.storage()
             .persistent()
-            .set(&DataKey::PairFeeBps(source, destination), &fee_bps);
+            .set(&DataKey::PairFeeBps(source.clone(), destination.clone()), &fee_bps);
+        env.events()
+            .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
     }
 
     /// Returns the configured fee in basis points for a pair, or 0 if
