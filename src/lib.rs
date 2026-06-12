@@ -556,6 +556,8 @@ impl StableRouteRouter {
             &DataKey::PairLastRouteAt(source.clone(), destination.clone()),
             &env.ledger().timestamp(),
         );
+        env.events()
+            .publish((symbol_short!("route"),), (source.clone(), destination.clone(), amount));
         let fee_bps: u32 = env
             .storage()
             .persistent()
