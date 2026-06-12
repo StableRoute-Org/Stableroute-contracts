@@ -261,7 +261,9 @@ impl StableRouteRouter {
         }
         env.storage()
             .persistent()
-            .set(&DataKey::Pair(source, destination), &true);
+            .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+        env.events()
+            .publish((symbol_short!("pair_reg"),), (source, destination));
     }
 
     /// Returns true iff the pair is registered AND has non-zero
