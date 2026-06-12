@@ -75,6 +75,8 @@ pub enum RouterError {
     AmountBelowMin = 10,
     /// Amount is above the configured PairMaxAmount.
     AmountAboveMax = 11,
+    /// Reported pair liquidity is below the requested amount.
+    InsufficientLiquidity = 12,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -386,6 +388,14 @@ impl StableRouteRouter {
             .unwrap_or(i128::MAX);
         if amount > max_amount {
             panic_with_error!(&env, RouterError::AmountAboveMax);
+        }
+        let liquidity: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+            .unwrap_or(i128::MAX);
+        if amount > liquidity {
+            panic_with_error!(&env, RouterError::InsufficientLiquidity);
         }
         let fee_bps: u32 = env
             .storage()
