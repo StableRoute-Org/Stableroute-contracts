@@ -382,7 +382,9 @@ impl StableRouteRouter {
         }
         env.storage()
             .persistent()
-            .set(&DataKey::PairLiquidity(source, destination), &liquidity);
+            .set(&DataKey::PairLiquidity(source.clone(), destination.clone()), &liquidity);
+        env.events()
+            .publish((symbol_short!("liq_set"),), (source, destination, liquidity));
     }
 
     /// Read the per-pair maximum (i128::MAX when absent).
