@@ -85,6 +85,20 @@ impl StableRouteRouter {
         env.storage().persistent().set(&DataKey::Admin, &admin);
     }
 
+    /// Step 1 of admin handover. Current admin proposes a new admin;
+    /// the new admin must then accept via `accept_admin_transfer`.
+    pub fn propose_admin_transfer(env: Env, new_admin: Address) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &new_admin);
+    }
+
     /// Returns the admin set at `init`, if any.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Admin)
