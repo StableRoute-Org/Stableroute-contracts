@@ -3,6 +3,18 @@ use soroban_sdk::{
     Env, Symbol,
 };
 
+/// Aggregated read of every pair-scoped storage slot.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairInfo {
+    pub registered: bool,
+    pub fee_bps: u32,
+    pub min_amount: i128,
+    pub max_amount: i128,
+    pub liquidity: i128,
+    pub last_route_at: u64,
+}
+
 /// Storage keys used by the StableRoute router.
 ///
 /// Persistent storage is used for the admin address and per-pair
@@ -220,6 +232,20 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .set(&DataKey::Pair(source, destination), &true);
+    }
+
+    /// Single round-trip aggregate read for the dashboard. Returns
+    /// every per-pair slot in one shot.
+    pub fn get_pair_info(env: Env, source: Symbol, destination: Symbol) -> PairInfo {
+        let s = env.storage().persistent();
+        PairInfo {
+            registered: s.get(&DataKey::Pair(source.clone(), destination.clone())).unwrap_or(false),
+            fee_bps: s.get(&DataKey::PairFeeBps(source.clone(), destination.clone())).unwrap_or(0),
+            min_amount: s.get(&DataKey::PairMinAmount(source.clone(), destination.clone())).unwrap_or(0),
+            max_amount: s.get(&DataKey::PairMaxAmount(source.clone(), destination.clone())).unwrap_or(i128::MAX),
+            liquidity: s.get(&DataKey::PairLiquidity(source.clone(), destination.clone())).unwrap_or(0),
+            last_route_at: s.get(&DataKey::PairLastRouteAt(source, destination)).unwrap_or(0),
+        }
     }
 
     /// Read-only quote of fee + net for a pair without writing the
