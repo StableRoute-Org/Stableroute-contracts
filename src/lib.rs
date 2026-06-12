@@ -211,6 +211,22 @@ impl StableRouteRouter {
             .set(&DataKey::Pair(source, destination), &true);
     }
 
+    /// Admin sets the per-pair minimum routable amount.
+    pub fn set_pair_min_amount(env: Env, source: Symbol, destination: Symbol, min_amount: i128) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
+        admin.require_auth();
+        if min_amount < 0 {
+            panic_with_error!(&env, RouterError::AmountMustBePositive);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PairMinAmount(source, destination), &min_amount);
+    }
+
     /// Unregister a previously-registered pair. Admin-gated. Idempotent.
     /// Does not touch the configured fee — that is removed only when the
     /// admin overwrites it back to 0 (or calls a future remove_fee).
