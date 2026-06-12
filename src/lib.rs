@@ -35,6 +35,9 @@ pub enum DataKey {
     /// Maximum routable amount per pair (in source units). Compute
     /// rejects amounts above the ceiling.
     PairMaxAmount(Symbol, Symbol),
+    /// Reported available liquidity (in source units) per pair.
+    /// Updated by an off-chain oracle via the admin entrypoint.
+    PairLiquidity(Symbol, Symbol),
 }
 
 /// Upper bound on the per-pair fee. 1 000 bps = 10 %. Tightening this
@@ -209,6 +212,22 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .set(&DataKey::Pair(source, destination), &true);
+    }
+
+    /// Admin sets the reported liquidity for a pair (source units).
+    pub fn set_pair_liquidity(env: Env, source: Symbol, destination: Symbol, liquidity: i128) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
+        admin.require_auth();
+        if liquidity < 0 {
+            panic_with_error!(&env, RouterError::AmountMustBePositive);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PairLiquidity(source, destination), &liquidity);
     }
 
     /// Read the per-pair maximum (i128::MAX when absent).
