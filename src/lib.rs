@@ -585,7 +585,7 @@ mod test {
         let contract_id = env.register(StableRouteRouter, ());
         let client = StableRouteRouterClient::new(&env, &contract_id);
         let v = client.version();
-        assert_eq!(v, symbol_short!("ROUTER_V1"));
+        assert_eq!(v, symbol_short!("ROUTER_V2"));
     }
 
     #[test]
