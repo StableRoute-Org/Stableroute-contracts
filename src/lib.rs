@@ -211,6 +211,22 @@ impl StableRouteRouter {
             .set(&DataKey::Pair(source, destination), &true);
     }
 
+    /// Admin sets the per-pair maximum routable amount.
+    pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
+        admin.require_auth();
+        if max_amount <= 0 {
+            panic_with_error!(&env, RouterError::AmountMustBePositive);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
+    }
+
     /// Read the per-pair minimum (0 when absent).
     pub fn get_pair_min_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
         env.storage()
