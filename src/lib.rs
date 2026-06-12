@@ -220,6 +220,14 @@ impl StableRouteRouter {
             .set(&DataKey::Pair(source, destination), &true);
     }
 
+    /// Read the protocol-wide lifetime counter of route quotes.
+    pub fn get_total_routes_all_time(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TotalRoutesAllTime)
+            .unwrap_or(0)
+    }
+
     /// Admin sets the address that receives protocol fees at
     /// settlement time. The router itself never custodies funds.
     pub fn set_fee_recipient(env: Env, recipient: Address) {
