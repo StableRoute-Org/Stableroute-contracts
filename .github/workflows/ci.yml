@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  fmt-build-test:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +15,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2
@@ -23,8 +24,26 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Build
         run: cargo build
 
-      - name: Run tests
-        run: cargo test
+      - name: Build WASM target
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq bc
+
+      - name: Run coverage and gate
+        run: |
+          cargo install cargo-tarpaulin
+          cargo tarpaulin --out Lcov --out Json --output-dir ./coverage
+          COVERAGE=$(cat ./coverage/tarpaulin-report.json | jq -r '.coverage')
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Coverage $COVERAGE% is below 80% threshold"
+            exit 1
+          fi
+          echo "Coverage $COVERAGE% meets 80% threshold"
