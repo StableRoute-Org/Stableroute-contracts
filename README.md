@@ -69,6 +69,10 @@ Ensure these pass locally before pushing.
 3. Open a PR; CI must be green.
 4. Follow the project’s code style (enforced by `rustfmt`).
 
+### Internal helper conventions
+
+**`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
+
 ## License
 
 MIT
