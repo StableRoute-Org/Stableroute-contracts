@@ -114,6 +114,21 @@ pub struct StableRouteRouter;
 
 #[contractimpl]
 impl StableRouteRouter {
+    /// Load the admin address, require its auth, and return it.
+    ///
+    /// Every admin-gated entrypoint calls this instead of repeating the
+    /// six-line load-unwrap-require_auth block. Keeping it private
+    /// ensures it never appears in the generated client ABI.
+    fn require_admin(env: &Env) -> Address {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, RouterError::NotInitialized));
+        admin.require_auth();
+        admin
+    }
+
     /// Returns the router contract version.
     pub fn version(_env: Env) -> Symbol {
         symbol_short!("ROUTER_V2")
@@ -133,12 +148,7 @@ impl StableRouteRouter {
     /// default sensibly when their new slots are absent, so the body
     /// only stamps the new SchemaVersion.
     pub fn migrate_v1_to_v2(env: Env) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         let current: u32 = env
             .storage()
             .persistent()
@@ -177,12 +187,7 @@ impl StableRouteRouter {
 
     /// Resume after a pause. Admin-gated and idempotent.
     pub fn unpause(env: Env) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage().persistent().set(&DataKey::Paused, &false);
         env.events().publish((symbol_short!("paused"),), false);
     }
@@ -190,24 +195,14 @@ impl StableRouteRouter {
     /// Admin pauses the router. All state-changing entrypoints will
     /// then panic with ContractPaused.
     pub fn pause(env: Env) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage().persistent().set(&DataKey::Paused, &true);
         env.events().publish((symbol_short!("paused"),), true);
     }
 
     /// Cancel a pending handover. No-op if none is pending.
     pub fn cancel_admin_transfer(env: Env) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage().persistent().remove(&DataKey::PendingAdmin);
     }
 
@@ -239,12 +234,7 @@ impl StableRouteRouter {
     /// Step 1 of admin handover. Current admin proposes a new admin;
     /// the new admin must then accept via `accept_admin_transfer`.
     pub fn propose_admin_transfer(env: Env, new_admin: Address) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdmin, &new_admin.clone());
@@ -271,12 +261,7 @@ impl StableRouteRouter {
         {
             panic_with_error!(&env, RouterError::ContractPaused);
         }
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         if source == destination {
             panic_with_error!(&env, RouterError::SourceEqualsDestination);
         }
@@ -378,12 +363,7 @@ impl StableRouteRouter {
     /// Admin sets the address that receives protocol fees at
     /// settlement time. The router itself never custodies funds.
     pub fn set_fee_recipient(env: Env, recipient: Address) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage()
             .persistent()
             .set(&DataKey::FeeRecipient, &recipient);
@@ -404,12 +384,7 @@ impl StableRouteRouter {
 
     /// Admin sets the reported liquidity for a pair (source units).
     pub fn set_pair_liquidity(env: Env, source: Symbol, destination: Symbol, liquidity: i128) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         if liquidity < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
@@ -433,12 +408,7 @@ impl StableRouteRouter {
 
     /// Admin sets the per-pair maximum routable amount.
     pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         if max_amount <= 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
@@ -457,12 +427,7 @@ impl StableRouteRouter {
 
     /// Admin sets the per-pair minimum routable amount.
     pub fn set_pair_min_amount(env: Env, source: Symbol, destination: Symbol, min_amount: i128) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         if min_amount < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
@@ -475,12 +440,7 @@ impl StableRouteRouter {
     /// Does not touch the configured fee — that is removed only when the
     /// admin overwrites it back to 0 (or calls a future remove_fee).
     pub fn unregister_pair(env: Env, source: Symbol, destination: Symbol) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         env.storage()
             .persistent()
             .remove(&DataKey::Pair(source.clone(), destination.clone()));
@@ -510,12 +470,7 @@ impl StableRouteRouter {
         {
             panic_with_error!(&env, RouterError::ContractPaused);
         }
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
-        admin.require_auth();
+        Self::require_admin(&env);
         if fee_bps > MAX_FEE_BPS {
             panic_with_error!(&env, RouterError::FeeBpsTooHigh);
         }
@@ -1012,5 +967,54 @@ mod test {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &-1i128);
+    }
+
+    // --- require_admin helper contract tests ---
+
+    /// After the refactor, every admin-gated entrypoint must still reject a
+    /// non-admin caller. We test `pause` as a representative; the helper is
+    /// shared, so this covers all entrypoints structurally.
+    #[test]
+    #[should_panic]
+    fn test_require_admin_rejects_unauthorized_caller() {
+        let env = Env::default();
+        let contract_id = env.register(StableRouteRouter, ());
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        // Initialize with the real admin (mock auth only for init).
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "init",
+                args: (admin.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.init(&admin);
+        // Now call pause as the attacker — no mock auth provided for attacker.
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &attacker,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "pause",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.pause(); // must panic: admin.require_auth() fails for attacker
+    }
+
+    /// Calling any admin-gated entrypoint before `init` must panic with
+    /// NotInitialized (error #2).
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_require_admin_panics_when_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(StableRouteRouter, ());
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        client.pause(); // no admin stored yet
     }
 }
