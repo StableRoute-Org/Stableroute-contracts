@@ -105,6 +105,9 @@ pub enum RouterError {
     InsufficientLiquidity = 12,
     /// `migrate_v1_to_v2` was called from a non-v1 schema.
     MigrationVersionMismatch = 13,
+    /// `compute_route_fee_checked` was called and the net output
+    /// (`amount - fee`) fell below the caller-supplied `min_out` floor.
+    SlippageExceeded = 14,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -500,8 +503,22 @@ impl StableRouteRouter {
     /// silent zero. Math is integer division (truncating toward zero),
     /// matching every existing Stellar fee accounting precedent.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
+        Self::route_fee_inner(&env, source, destination, amount)
+    }
+
+    /// Canonical route-fee implementation shared by `compute_route_fee` and
+    /// `compute_route_fee_checked`.
+    ///
+    /// Performs all validation (amount > 0, pair registered, min/max bounds,
+    /// liquidity), the side effects (lifetime counter bump, per-pair
+    /// last-route-at stamp, and the `route` event), and returns the fee in
+    /// source units. Private so it never enters the generated client ABI and
+    /// so both public entrypoints share identical logic and side-effect
+    /// semantics. Call it exactly once per invocation to avoid double
+    /// counting.
+    fn route_fee_inner(env: &Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         if amount <= 0 {
-            panic_with_error!(&env, RouterError::AmountMustBePositive);
+            panic_with_error!(env, RouterError::AmountMustBePositive);
         }
         if !env
             .storage()
@@ -509,7 +526,7 @@ impl StableRouteRouter {
             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
             .unwrap_or(false)
         {
-            panic_with_error!(&env, RouterError::PairNotRegistered);
+            panic_with_error!(env, RouterError::PairNotRegistered);
         }
         let min_amount: i128 = env
             .storage()
@@ -517,7 +534,7 @@ impl StableRouteRouter {
             .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
             .unwrap_or(0);
         if amount < min_amount {
-            panic_with_error!(&env, RouterError::AmountBelowMin);
+            panic_with_error!(env, RouterError::AmountBelowMin);
         }
         let max_amount: i128 = env
             .storage()
@@ -525,7 +542,7 @@ impl StableRouteRouter {
             .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
             .unwrap_or(i128::MAX);
         if amount > max_amount {
-            panic_with_error!(&env, RouterError::AmountAboveMax);
+            panic_with_error!(env, RouterError::AmountAboveMax);
         }
         let liquidity: i128 = env
             .storage()
@@ -533,7 +550,7 @@ impl StableRouteRouter {
             .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
             .unwrap_or(i128::MAX);
         if amount > liquidity {
-            panic_with_error!(&env, RouterError::InsufficientLiquidity);
+            panic_with_error!(env, RouterError::InsufficientLiquidity);
         }
         let total: u64 = env
             .storage()
@@ -565,6 +582,41 @@ impl StableRouteRouter {
             .unwrap_or(0)
     }
 
+    /// Slippage-guarded variant of [`Self::compute_route_fee`].
+    ///
+    /// Runs the exact same canonical code path as `compute_route_fee` via the
+    /// shared private inner helper, so it performs identical validation, the
+    /// same side effects (lifetime counter bump, per-pair last-route-at
+    /// stamp, and `route` event), and computes the fee with identical math.
+    /// After the fee is known, it derives `net = amount - fee` and, when the
+    /// caller supplies a positive `min_out`, enforces a minimum-output floor:
+    /// if `min_out > 0 && net < min_out` it panics with
+    /// [`RouterError::SlippageExceeded`].
+    ///
+    /// A `min_out <= 0` disables the floor entirely, making this behave
+    /// exactly like the unchecked path (same validation, side effects, and
+    /// returned fee). On success the returned value is the fee, identical to
+    /// `compute_route_fee`.
+    ///
+    /// The inner helper is called exactly once, so the counter/timestamp/event
+    /// fire exactly once and there is no double counting. Because the
+    /// unchecked path is the canonical behaviour, the floor check happens
+    /// after the side effects have already run.
+    pub fn compute_route_fee_checked(
+        env: Env,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+        min_out: i128,
+    ) -> i128 {
+        let fee = Self::route_fee_inner(&env, source, destination, amount);
+        let net = amount - fee;
+        if min_out > 0 && net < min_out {
+            panic_with_error!(&env, RouterError::SlippageExceeded);
+        }
+        fee
+    }
+
     /// Placeholder: returns a fixed route tag for a source/destination pair.
     /// Used by the backend to verify route integrity.
     pub fn route_tag(_env: Env, source: Symbol, destination: Symbol) -> (Symbol, Symbol) {
@@ -575,7 +627,7 @@ impl StableRouteRouter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _};
+    use soroban_sdk::{symbol_short, testutils::Address as _, IntoVal};
 
     fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
         env.mock_all_auths();
@@ -967,6 +1019,105 @@ mod test {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &-1i128);
+    }
+
+    // --- compute_route_fee_checked (slippage guard) tests ---
+
+    /// net below the floor must panic SlippageExceeded (#14). With a 100 bps
+    /// fee on 1_000, fee = 10 and net = 990; a min_out of 991 must reject.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_compute_route_fee_checked_rejects_below_floor() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &100u32);
+        client.compute_route_fee_checked(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000i128,
+            &991i128,
+        );
+    }
+
+    /// net exactly at the floor passes and returns the fee. fee = 10,
+    /// net = 990, min_out = 990 -> not below, so it succeeds.
+    #[test]
+    fn test_compute_route_fee_checked_passes_at_exact_floor() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &100u32);
+        let fee = client.compute_route_fee_checked(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000i128,
+            &990i128,
+        );
+        assert_eq!(fee, 10);
+    }
+
+    /// min_out <= 0 disables the floor and must match the unchecked path
+    /// exactly (same fee, same side effects).
+    #[test]
+    fn test_compute_route_fee_checked_no_floor_matches_unchecked() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &100u32);
+
+        // min_out = 0 -> no floor.
+        let fee_zero = client.compute_route_fee_checked(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000i128,
+            &0i128,
+        );
+        assert_eq!(fee_zero, 10);
+        assert_eq!(client.get_total_routes_all_time(), 1);
+
+        // min_out negative -> also no floor.
+        let fee_neg = client.compute_route_fee_checked(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000i128,
+            &-5i128,
+        );
+        assert_eq!(fee_neg, 10);
+        assert_eq!(client.get_total_routes_all_time(), 2);
+    }
+
+    /// The checked variant's fee math is identical to the unchecked variant
+    /// when the floor is satisfied. Run both on equivalent fresh state.
+    #[test]
+    fn test_compute_route_fee_checked_parity_with_unchecked() {
+        let unchecked_fee = {
+            let env = Env::default();
+            let (client, _admin) = setup_initialized(&env);
+            client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+            client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+            client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000i128,
+            )
+        };
+
+        let checked_fee = {
+            let env = Env::default();
+            let (client, _admin) = setup_initialized(&env);
+            client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+            client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+            client.compute_route_fee_checked(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000i128,
+                &990_000i128,
+            )
+        };
+
+        assert_eq!(unchecked_fee, checked_fee);
+        assert_eq!(checked_fee, 5_000);
     }
 
     // --- require_admin helper contract tests ---

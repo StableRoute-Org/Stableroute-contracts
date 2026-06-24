@@ -73,6 +73,33 @@ Ensure these pass locally before pushing.
 
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
+## Slippage protection (minimum-output guard)
+
+`compute_route_fee` returns the fee for routing an amount through a pair and
+computes `net = amount - fee`. Because a route may be submitted into changing
+on-chain conditions (e.g. a fee bump landing between quote and execution), the
+realised `net` can drift below what the caller expected — the kind of value
+leakage that MEV/front-running and ordinary slippage cause.
+
+`compute_route_fee_checked(source, destination, amount, min_out)` lets the
+caller pin a floor on the output:
+
+- It runs the **same canonical code path** as `compute_route_fee` (identical
+  validation, the same side effects — lifetime counter bump, per-pair
+  last-route-at stamp, and `route` event — and identical fee math), via a
+  shared private inner helper that is invoked exactly once so there is no
+  double counting.
+- After the fee is computed it derives `net = amount - fee`. If
+  `min_out > 0 && net < min_out` it panics with
+  `RouterError::SlippageExceeded` (code `14`).
+- `min_out <= 0` disables the floor, so the call behaves exactly like the
+  unchecked path.
+- On success it returns the fee, identical to `compute_route_fee`.
+
+Off-chain callers that want slippage protection should derive `min_out` from
+their accepted-output tolerance and call the checked variant; callers that
+only need a fee figure can keep using `compute_route_fee`.
+
 ## License
 
 MIT
