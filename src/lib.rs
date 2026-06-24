@@ -879,7 +879,6 @@ impl StableRouteRouter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use proptest::prelude::*;
     use soroban_sdk::{symbol_short, testutils::Address as _, IntoVal};
 
     /// Register a USDC→EURC pair with `fee_bps` and unbounded liquidity,
