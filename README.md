@@ -73,6 +73,28 @@ Ensure these pass locally before pushing.
 
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
+## Testing notes
+
+### `compute_route_fee` side-effect matrix
+
+`compute_route_fee` is the only mutating read path. On success it performs three
+side effects, each covered by a dedicated test in `src/lib.rs`:
+
+| Side effect | Storage / event | Test |
+|-------------|-----------------|------|
+| Lifetime counter | `DataKey::TotalRoutesAllTime` (saturating, protocol-wide) | `test_compute_route_fee_counter_is_global_across_pairs` |
+| Last-route timestamp | `DataKey::PairLastRouteAt` ← `env.ledger().timestamp()` | `test_compute_route_fee_stamps_pair_last_route_at` |
+| Emitted event | topic `route`, data `(source, destination, amount)` | `test_compute_route_fee_emits_route_event_with_payload` |
+
+`quote_route` is the read-only twin and must perform **none** of these. The
+parity guard `test_quote_route_does_not_mutate_counter_or_emit_route_event`
+asserts the counter is unchanged and no new `route` event is emitted after a
+quote.
+
+The `route_event_payloads` test helper scans the accumulated host events
+(init / register / fee_set all emit too) and returns only the decoded payloads
+of events whose single topic is `route`.
+
 ## License
 
 MIT
