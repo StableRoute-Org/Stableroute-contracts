@@ -49,6 +49,18 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
 
+## Emergency stop (pause) guarantee
+
+When the admin calls `pause()`, every **state-mutating** entrypoint is
+blocked with `ContractPaused` (#9) — including `compute_route_fee`, which
+records a route (`TotalRoutesAllTime`), stamps `PairLastRouteAt`, and
+emits the `route` event. This guarantees that once an admin trips the
+emergency stop, no further routing accounting can occur until `unpause()`.
+
+The read-only `quote_route` is intentionally **left available** while
+paused so integrators can keep planning routes for when the router
+resumes; it never mutates state.
+
 ## CI/CD
 
 On every push/PR to `main`, GitHub Actions runs:
