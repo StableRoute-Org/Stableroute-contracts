@@ -53,21 +53,27 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
 
-## Governance timelock
+## Property-based fee tests
 
-Admin handover can be put behind an optional delay so a compromised admin
-key cannot rotate control in a single ledger with no warning window.
+Beyond the hand-picked example tests, the fee math in `compute_route_fee`
+/ `quote_route` is covered by a [`proptest`](https://docs.rs/proptest)
+harness that asserts invariants across a wide input space:
 
-- `set_timelock(delay_seconds)` (admin) configures the delay. Default `0`
-  means instant handover (prior behaviour).
-- `propose_admin_transfer(new_admin)` stamps `PendingAdminEta = now +
-  delay` and emits a `queued` event carrying `(new_admin, eta)`.
-- `accept_admin_transfer(caller)` rejects with `TimelockNotElapsed` (#14)
-  until `ledger().timestamp() >= eta`, then emits `executed`.
-- `cancel_admin_transfer()` clears both the pending admin and its eta.
+- `fee <= amount` and `fee >= 0` for any `fee_bps <= MAX_FEE_BPS`;
+- `fee == 0` whenever `fee_bps == 0`;
+- `quote_route` fee equals `compute_route_fee` fee for identical config,
+  and `fee + net == amount`.
 
-Recommended delay for production governance: **24–72 hours** so users and
-watchers have time to react to a queued handover.
+Run them with the rest of the suite:
+
+```bash
+cargo test                     # includes the prop_* cases
+cargo test prop_               # property tests only
+```
+
+The harness uses a fixed case count (`ProptestConfig { cases: 96 }`) so CI
+stays deterministic and fast. Add new invariants as further `proptest!`
+blocks in the `mod test` section of [`src/lib.rs`](src/lib.rs).
 
 ## CI/CD
 
