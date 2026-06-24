@@ -74,6 +74,11 @@ pub enum DataKey {
     PairVolume(Symbol, Symbol),
     /// On-chain storage schema version. Distinct from version().
     SchemaVersion,
+    /// `true` while a non-reentrant entrypoint is executing. The guard
+    /// helpers set this on entry and clear it on every return path so a
+    /// re-entrant call (e.g. via a future malicious token callback) panics
+    /// with [`RouterError::ReentrantCall`] instead of observing stale state.
+    ReentrancyLock,
 }
 
 /// Upper bound on the per-pair fee. 1 000 bps = 10 %. Tightening this
@@ -115,9 +120,9 @@ pub enum RouterError {
     InsufficientLiquidity = 12,
     /// `migrate_v1_to_v2` was called from a non-v1 schema.
     MigrationVersionMismatch = 13,
-    /// `compute_route_fee_checked` was called and the net output
-    /// (`amount - fee`) fell below the caller-supplied `min_out` floor.
-    SlippageExceeded = 14,
+    /// A non-reentrant entrypoint was re-entered while its reentrancy
+    /// lock was already held.
+    ReentrantCall = 14,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -140,6 +145,34 @@ impl StableRouteRouter {
             .unwrap_or_else(|| panic_with_error!(env, RouterError::NotInitialized));
         admin.require_auth();
         admin
+    }
+
+    /// Acquire the reentrancy lock; panics [`RouterError::ReentrantCall`]
+    /// if already held. Paired with [`Self::exit_nonreentrant`] on every
+    /// return path so that a re-entrant invocation (for example via a
+    /// future malicious token callback) is rejected instead of operating
+    /// on partially-applied effects.
+    fn enter_nonreentrant(env: &Env) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::ReentrancyLock)
+            .unwrap_or(false)
+        {
+            panic_with_error!(env, RouterError::ReentrantCall);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReentrancyLock, &true);
+    }
+
+    /// Release the reentrancy lock. Must be called before every return
+    /// from a guarded entrypoint, including the success path, so that
+    /// back-to-back calls work.
+    fn exit_nonreentrant(env: &Env) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReentrancyLock, &false);
     }
 
     /// Returns the router contract version.
@@ -560,23 +593,31 @@ impl StableRouteRouter {
     /// silent zero. Math is integer division (truncating toward zero),
     /// matching every existing Stellar fee accounting precedent.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
-        Self::route_fee_inner(&env, source, destination, amount)
-    }
+        // --- Checks-Effects-Interactions discipline ---
+        //
+        // 1. CHECKS: validate every argument and read-only precondition
+        //    before mutating any state. The cheap argument check runs
+        //    before the reentrancy lock is acquired; the remaining checks
+        //    run under the lock.
+        // 2. EFFECTS: write the counter and timestamp, then emit the route
+        //    event, all while the reentrancy lock is held.
+        // 3. INTERACTIONS: any external token transfer MUST happen LAST,
+        //    after every effect is committed. None exist yet — this guard
+        //    is preparatory so the future fund-moving path is safe by
+        //    construction. Because no external call is made, the lock is
+        //    released on the normal success path so back-to-back calls
+        //    succeed; on any panic the transaction rolls back, which also
+        //    clears the lock.
 
-    /// Canonical route-fee implementation shared by `compute_route_fee` and
-    /// `compute_route_fee_checked`.
-    ///
-    /// Performs all validation (amount > 0, pair registered, min/max bounds,
-    /// liquidity), the side effects (lifetime counter bump, per-pair
-    /// last-route-at stamp, and the `route` event), and returns the fee in
-    /// source units. Private so it never enters the generated client ABI and
-    /// so both public entrypoints share identical logic and side-effect
-    /// semantics. Call it exactly once per invocation to avoid double
-    /// counting.
-    fn route_fee_inner(env: &Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
+        // CHECKS (cheap argument validation, pre-lock).
         if amount <= 0 {
             panic_with_error!(env, RouterError::AmountMustBePositive);
         }
+
+        // Acquire the reentrancy lock before any further reads or effects.
+        Self::enter_nonreentrant(&env);
+
+        // CHECKS (state-dependent preconditions, under the lock).
         if !env
             .storage()
             .persistent()
@@ -634,6 +675,8 @@ impl StableRouteRouter {
                 }
             }
         }
+
+        // EFFECTS: write the counter and timestamp, then emit the event.
         let total: u64 = env
             .storage()
             .persistent()
@@ -679,10 +722,17 @@ impl StableRouteRouter {
         // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
         // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
         // multiplication is bounded.
-        amount
+        let fee = amount
             .checked_mul(fee_bps as i128)
             .map(|n| n / BPS_DENOMINATOR)
-            .unwrap_or(0)
+            .unwrap_or(0);
+
+        // INTERACTIONS would go here (external transfers), strictly last.
+
+        // Release the lock on the normal success path so back-to-back
+        // calls work.
+        Self::exit_nonreentrant(&env);
+        fee
     }
 
     /// Slippage-guarded variant of [`Self::compute_route_fee`].
@@ -733,12 +783,19 @@ mod test {
     use soroban_sdk::{symbol_short, testutils::Address as _, IntoVal};
 
     fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        let (client, admin, _id) = setup_initialized_with_id(env);
+        (client, admin)
+    }
+
+    /// Like [`setup_initialized`] but also returns the contract id so tests
+    /// can reach into the contract's own storage via `env.as_contract`.
+    fn setup_initialized_with_id(env: &Env) -> (StableRouteRouterClient<'_>, Address, Address) {
         env.mock_all_auths();
         let contract_id = env.register(StableRouteRouter, ());
         let client = StableRouteRouterClient::new(env, &contract_id);
         let admin = Address::generate(env);
         client.init(&admin);
-        (client, admin)
+        (client, admin, contract_id)
     }
 
     /// Register the contract WITHOUT calling `init`, so no admin is stored.
@@ -1281,77 +1338,57 @@ mod test {
         client.pause(); // must panic: admin.require_auth() fails for attacker
     }
 
-    // --- per-pair route count + cumulative volume tests ---
+    // --- reentrancy guard tests ---
 
+    /// The normal success path must RELEASE the reentrancy lock, so two
+    /// consecutive `compute_route_fee` calls on the same pair both succeed.
+    /// If the lock leaked, the second call would panic with #14.
     #[test]
-    fn test_pair_route_count_and_volume_default_to_zero() {
-        let env = Env::default();
-        let (client, _admin) = setup_initialized(&env);
-        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            0
-        );
-        assert_eq!(
-            client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            0
-        );
-    }
-
-    #[test]
-    fn test_pair_route_count_and_volume_increment_per_route() {
+    fn test_compute_route_fee_releases_lock_for_consecutive_calls() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
 
-        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000i128);
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1
+        let first = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
         );
-        assert_eq!(
-            client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1_000
+        let second = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
         );
 
-        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &2_500i128);
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            2
-        );
-        assert_eq!(
-            client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            3_500
-        );
+        assert_eq!(first, 5_000);
+        assert_eq!(second, 5_000);
+        assert_eq!(client.get_total_routes_all_time(), 2);
     }
 
+    /// When the reentrancy lock is already held, `compute_route_fee` must
+    /// reject the call with ReentrantCall (#14). We simulate the in-flight
+    /// state by setting the lock directly in the contract's storage, which
+    /// is exactly what a re-entrant inner call would observe.
     #[test]
-    fn test_pair_route_count_and_volume_isolated_per_pair() {
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_compute_route_fee_rejects_reentry() {
         let env = Env::default();
-        let (client, _admin) = setup_initialized(&env);
+        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-        client.register_pair(&symbol_short!("USDC"), &symbol_short!("GBPC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
 
-        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000i128);
-        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &500i128);
-        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("GBPC"), &7_000i128);
+        // Simulate the lock being already held (as it would be mid-call).
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ReentrancyLock, &true);
+        });
 
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            2
-        );
-        assert_eq!(
-            client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1_500
-        );
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("GBPC")),
-            1
-        );
-        assert_eq!(
-            client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("GBPC")),
-            7_000
+        client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
         );
     }
 

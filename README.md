@@ -97,32 +97,38 @@ tiers) and the PR checklist.
 
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
-## Slippage protection (minimum-output guard)
+## Reentrancy & call ordering
 
-`compute_route_fee` returns the fee for routing an amount through a pair and
-computes `net = amount - fee`. Because a route may be submitted into changing
-on-chain conditions (e.g. a fee bump landing between quote and execution), the
-realised `net` can drift below what the caller expected — the kind of value
-leakage that MEV/front-running and ordinary slippage cause.
+`StableRouteRouter` enforces a single-entry reentrancy guard plus a
+Checks-Effects-Interactions (CEI) discipline so that the future
+fund-moving path is safe by construction.
 
-`compute_route_fee_checked(source, destination, amount, min_out)` lets the
-caller pin a floor on the output:
+**Reentrancy guard.** A `DataKey::ReentrancyLock` boolean tracks whether a
+guarded entrypoint is mid-execution. Two private helpers manage it:
 
-- It runs the **same canonical code path** as `compute_route_fee` (identical
-  validation, the same side effects — lifetime counter bump, per-pair
-  last-route-at stamp, and `route` event — and identical fee math), via a
-  shared private inner helper that is invoked exactly once so there is no
-  double counting.
-- After the fee is computed it derives `net = amount - fee`. If
-  `min_out > 0 && net < min_out` it panics with
-  `RouterError::SlippageExceeded` (code `14`).
-- `min_out <= 0` disables the floor, so the call behaves exactly like the
-  unchecked path.
-- On success it returns the fee, identical to `compute_route_fee`.
+- `enter_nonreentrant(env)` — panics with `RouterError::ReentrantCall`
+  (error `#14`) if the lock is already held, otherwise sets it.
+- `exit_nonreentrant(env)` — clears the lock; it is called on the normal
+  success path so back-to-back invocations work. On any panic the
+  transaction rolls back, which also clears the lock.
 
-Off-chain callers that want slippage protection should derive `min_out` from
-their accepted-output tolerance and call the checked variant; callers that
-only need a fee figure can keep using `compute_route_fee`.
+`compute_route_fee` acquires the lock after cheap argument validation and
+before any state-dependent reads or effects, and releases it on success.
+A re-entrant inner call (for example via a future malicious token
+callback) therefore observes the lock as held and is rejected with `#14`.
+
+**Checks-Effects-Interactions.** Guarded entrypoints follow a strict
+ordering:
+
+1. **Checks** — validate all arguments and read-only preconditions.
+2. **Effects** — write state (counter, timestamp) and emit events.
+3. **Interactions** — perform any external token transfer LAST, after all
+   effects are committed.
+
+`compute_route_fee` makes no external calls yet, so the guard is
+preparatory; when the external transfer path lands it must remain the
+final step. The reentrancy guard is the primitive that keeps that path
+safe even if an interacting token re-enters the router.
 
 ## License
 
