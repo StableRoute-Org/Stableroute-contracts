@@ -97,26 +97,16 @@ tiers) and the PR checklist.
 
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
-## Rate limiting: per-pair route cooldown
+### Lifecycle test matrix
 
-`StableRouteRouter` supports an optional, per-pair rate limit on
-`compute_route_fee` to dampen route spam and front-running pressure.
+The inline test module exercises the contract across two lifecycle states using two helpers:
 
-- **Configuration** — the admin sets a cooldown (in seconds) per pair with
-  `set_pair_cooldown(source, destination, cooldown_secs)` and reads it back
-  with `get_pair_cooldown(source, destination)`. The default is `0`, which
-  **disables** the rate limit for the pair.
-- **Enforcement** — when a non-zero cooldown is configured,
-  `compute_route_fee` rejects a call with `RouteCooldownActive` (error #14)
-  if it arrives before `cooldown_secs` have elapsed since the pair's last
-  successful route. Concretely, a call at ledger time `now` is rejected when
-  `now < last_route_at + cooldown_secs`. The boundary is inclusive: a call
-  exactly at `last_route_at + cooldown_secs` is allowed.
-- **First route** — the first route for a pair (no recorded
-  `PairLastRouteAt`) is always allowed, regardless of the cooldown.
-- **Scope** — the limit is per `(source, destination)` pair and is keyed off
-  the existing `PairLastRouteAt` timestamp, so it adds no new write on the
-  hot path beyond the timestamp that was already being stamped.
+| Helper | State | Covers |
+|--------|-------|--------|
+| `setup_initialized` | registered + `init` called (admin stored) | happy-path reads/writes, migration, admin transfer, pause/unpause |
+| `setup_uninitialized` | registered, **no** `init` (no admin) | `version()` / `get_schema_version()` defaults; every admin-gated entrypoint panics `NotInitialized` (#2) before any state change |
+
+`version()` is a fixed identity tag (`ROUTER_V2`) and is asserted to be independent of `get_schema_version()`, which advances 1 -> 2 across `migrate_v1_to_v2`. On an uninitialized contract `get_schema_version()` returns its default of 1.
 
 ## License
 
