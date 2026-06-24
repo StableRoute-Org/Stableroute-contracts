@@ -53,28 +53,22 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
 
-## Secure deployment
+## Roles & least privilege
 
-The admin is set **atomically at deploy time** by the contract
-constructor, which closes the init front-running window (a deployed but
-uninitialized contract whose admin slot anyone could claim).
+The router separates **governance** from the **liquidity feed**:
 
-Deploy with the admin passed as a constructor argument:
+| Role | Set by | Can do | Cannot do |
+|------|--------|--------|-----------|
+| **Admin** | `init` / constructor | Everything: pairs, fees, pause, admin handover, `set_oracle`, liquidity | — |
+| **Oracle** | `set_oracle` (admin only) | `set_pair_liquidity` **only** | Set fees, pause, rotate admin, upgrade, set oracle |
 
-```bash
-# Soroban CLI: pass --admin as a constructor arg at deploy
-soroban contract deploy --wasm <router.wasm> -- --admin <ADMIN_G...>
-```
-
-```rust
-// Rust tests / SDK
-let contract_id = env.register(StableRouteRouter, (admin.clone(),));
-```
-
-The legacy `init(admin)` entrypoint is retained for ABI compatibility but
-**always panics with `AlreadyInitialized` (#1)** — the admin slot is
-already populated by the constructor, so `init` can never claim it and an
-attacker can never use it to seize the admin role.
+Rationale: the liquidity oracle is a hot, frequently rotated key that
+pushes a low-trust market feed. Forcing it to share the admin key (which
+can redirect fees and rotate control) conflates a low-trust input with
+full governance. `set_pair_liquidity(caller, …)` accepts **either** the
+admin or the configured oracle and rejects everyone else with
+`NotAuthorized` (#14); every other privileged entrypoint remains
+strictly admin-only.
 
 ## CI/CD
 
