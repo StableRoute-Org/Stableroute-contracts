@@ -575,7 +575,7 @@ impl StableRouteRouter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _};
+    use soroban_sdk::{symbol_short, testutils::Address as _, IntoVal};
 
     fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
         env.mock_all_auths();
@@ -584,6 +584,17 @@ mod test {
         let admin = Address::generate(env);
         client.init(&admin);
         (client, admin)
+    }
+
+    /// Register the contract WITHOUT calling `init`, so no admin is stored.
+    /// All auths are mocked, isolating the failure to the missing-admin
+    /// branch (`NotInitialized`, error #2) inside `require_admin`. Use this
+    /// for the uninitialized-call negative tests; never reuse
+    /// `setup_initialized` for them.
+    fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let contract_id = env.register(StableRouteRouter, ());
+        StableRouteRouterClient::new(env, &contract_id)
     }
 
     #[test]
@@ -1016,5 +1027,150 @@ mod test {
         let contract_id = env.register(StableRouteRouter, ());
         let client = StableRouteRouterClient::new(&env, &contract_id);
         client.pause(); // no admin stored yet
+    }
+
+    // --- version surface stability ---
+
+    /// `version()` is the fixed contract identity tag and must be entirely
+    /// independent of `get_schema_version()`: migrating the storage schema
+    /// from v1 to v2 advances the schema number but never the version tag.
+    #[test]
+    fn test_version_is_independent_of_schema_version() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        // Version tag and schema number start at known, distinct values.
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+        assert_eq!(client.get_schema_version(), 1);
+
+        client.migrate_v1_to_v2();
+
+        // Schema advanced 1 -> 2, but the version tag is unchanged.
+        assert_eq!(client.get_schema_version(), 2);
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+    }
+
+    /// `version()` does not require an initialized contract: it is a pure
+    /// constant readable on a freshly registered (uninitialized) contract.
+    #[test]
+    fn test_version_readable_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+    }
+
+    // --- get_schema_version default before init/migration ---
+
+    /// On a registered-but-uninitialized contract (no init, no migration),
+    /// `get_schema_version()` returns the implicit pre-migration default of 1.
+    #[test]
+    fn test_get_schema_version_defaults_to_one_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        assert_eq!(client.get_schema_version(), 1);
+    }
+
+    // --- uninitialized admin-gated entrypoints panic NotInitialized (#2) ---
+    //
+    // Each test below registers the contract WITHOUT init and calls one
+    // admin-gated entrypoint. With no admin stored, `require_admin` panics
+    // with NotInitialized (#2) before any state change can occur. Auths are
+    // mocked, so the panic is solely from the missing admin, not auth.
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_pause_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.pause();
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unpause_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.unpause();
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_fee_bps_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_propose_admin_transfer_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let new_admin = Address::generate(&env);
+        client.propose_admin_transfer(&new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_cancel_admin_transfer_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.cancel_admin_transfer();
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_migrate_v1_to_v2_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.migrate_v1_to_v2();
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_fee_recipient_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let recipient = Address::generate(&env);
+        client.set_fee_recipient(&recipient);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_pair_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unregister_pair_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.unregister_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_liquidity_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"), &1i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_min_amount_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_max_amount_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1i128);
     }
 }

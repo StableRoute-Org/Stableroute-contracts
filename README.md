@@ -73,6 +73,17 @@ Ensure these pass locally before pushing.
 
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
+### Lifecycle test matrix
+
+The inline test module exercises the contract across two lifecycle states using two helpers:
+
+| Helper | State | Covers |
+|--------|-------|--------|
+| `setup_initialized` | registered + `init` called (admin stored) | happy-path reads/writes, migration, admin transfer, pause/unpause |
+| `setup_uninitialized` | registered, **no** `init` (no admin) | `version()` / `get_schema_version()` defaults; every admin-gated entrypoint panics `NotInitialized` (#2) before any state change |
+
+`version()` is a fixed identity tag (`ROUTER_V2`) and is asserted to be independent of `get_schema_version()`, which advances 1 -> 2 across `migrate_v1_to_v2`. On an uninitialized contract `get_schema_version()` returns its default of 1.
+
 ## License
 
 MIT
