@@ -143,6 +143,38 @@ tiers) and the PR checklist.
 
 ## Testing notes
 
+## Liquidity consumption model
+
+`compute_route_fee` debits the routed `amount` from the pair's stored
+`PairLiquidity` on every successful route. This ensures the on-chain
+liquidity figure reflects consumption between oracle updates, preventing
+repeated routes from exceeding real available liquidity.
+
+### Behaviour
+
+- **Set liquidity:** When an oracle or admin has called
+  `set_pair_liquidity`, the stored value is decreased by `amount` via
+  saturating subtraction and persisted. A `liq_used` event with
+  `(source, destination, remaining_liquidity)` is emitted. The slot TTL is
+  extended on each write.
+- **Unset liquidity (unbounded sentinel):** When `PairLiquidity` has never
+  been written it reads as `i128::MAX` inside `compute_route_fee`. The
+  decrement is **skipped entirely** — no storage write and no `liq_used`
+  event — preserving the "no oracle configured" behaviour. The public
+  getter `get_pair_liquidity` still returns `0` for absent slots.
+- **InsufficientLiquidity:** The existing guard (`RouterError::InsufficientLiquidity`,
+  code #12) fires when `amount > stored_liquidity`.
+- **Oracle top-up:** The oracle (or admin) can replenish liquidity at any
+  time via `set_pair_liquidity`. The new value overwrites whatever remains,
+  resetting the consumption window.
+
+### Event reference
+
+| Topic | Data | Emitted by | Meaning |
+|-------|------|-----------|---------|
+| `liq_used` | `(source, destination, remaining_liquidity)` | `compute_route_fee` | Liquidity decremented by routed amount |
+| `liq_set` | `(source, destination, liquidity)` | `set_pair_liquidity` | Oracle/admin set/replenished liquidity |
+
 ### `compute_route_fee` side-effect matrix
 
 `compute_route_fee` is the only mutating read path. On success it performs three
@@ -152,7 +184,9 @@ side effects, each covered by a dedicated test in `src/lib.rs`:
 |-------------|-----------------|------|
 | Lifetime counter | `DataKey::TotalRoutesAllTime` (saturating, protocol-wide) | `test_compute_route_fee_counter_is_global_across_pairs` |
 | Last-route timestamp | `DataKey::PairLastRouteAt` ← `env.ledger().timestamp()` | `test_compute_route_fee_stamps_pair_last_route_at` |
+| Liquidity debit | `DataKey::PairLiquidity` ← `max(0, liquidity - amount)` | `test_liquidity_decremented_by_amount_after_route` |
 | Emitted event | topic `route`, data `(source, destination, amount)` | `test_compute_route_fee_emits_route_event_with_payload` |
+| Emitted event | topic `liq_used`, data `(source, destination, remaining)` | `test_liq_used_event_emitted_with_remaining` |
 
 `quote_route` is the read-only twin and must perform **none** of these. The
 parity guard `test_quote_route_does_not_mutate_counter_or_emit_route_event`
@@ -177,6 +211,7 @@ buffer:
 | `set_pair_fees_bps` | `fee_set` (per entry) | `(source, destination, fee_bps)` (per entry) | `test_set_pair_fees_bps_empty` |
 | `set_pair_liquidity` | `liq_set` | `(source, destination, liquidity)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
 | `unregister_pair` | `unreg` | `(source, destination)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
+| `compute_route_fee` | `liq_used` | `(source, destination, remaining_liquidity)` | `test_liq_used_event_emitted_with_remaining` |
 
 Two edge-case tests guard idempotency and storage boundaries: unregistering a
 never-registered pair stays a clean no-op while still emitting the lifecycle
