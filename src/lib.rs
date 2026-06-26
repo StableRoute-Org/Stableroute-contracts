@@ -1,4 +1,3 @@
-
 #![allow(deprecated)] // TODO: migrate Soroban events to #[contractevent].
 #![no_std]
 // Contributing? See CONTRIBUTING.md for error-numbering, event-topic, auth,
@@ -7,9 +6,10 @@
 #[cfg(test)]
 extern crate std;
 
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol,
+    Bytes, BytesN, Env, Symbol, Vec,
 };
 
 /// Aggregated read of every pair-scoped storage slot.
@@ -98,6 +98,10 @@ pub enum DataKey {
 pub const MAX_FEE_BPS: u32 = 1_000;
 /// Basis-point denominator: 1 bps = 1/10_000.
 pub const BPS_DENOMINATOR: i128 = 10_000;
+/// Maximum number of entries in a single batch operation
+/// (`register_pairs`, `set_pair_fees_bps`). Kept modest to bound
+/// per-transaction gas costs.
+pub const MAX_BATCH_SIZE: u32 = 100;
 
 /// Typed contract errors. Codes are append-only — never reuse or
 /// renumber a variant once it has shipped.
@@ -140,6 +144,9 @@ pub enum RouterError {
     NotAuthorized = 16,
     /// Per-pair cooldown has not elapsed since the last route.
     RouteCooldownActive = 17,
+    /// A batch entrypoint was called with more entries than
+    /// [`MAX_BATCH_SIZE`].
+    BatchTooLarge = 18,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
