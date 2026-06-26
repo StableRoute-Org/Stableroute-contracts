@@ -898,6 +898,16 @@ impl StableRouteRouter {
     /// read-only `quote_route` is intentionally left available while
     /// paused so integrators can keep planning routes for when the router
     /// resumes.
+    ///
+    /// # Liquidity consumption
+    ///
+    /// After passing all pre-condition checks, the function debits `amount`
+    /// from the stored `PairLiquidity` via saturating subtraction. If the
+    /// liquidity slot is unset (i.e. reads as `i128::MAX` — the unbounded
+    /// sentinel) the decrement is skipped entirely, preserving the "no
+    /// oracle configured" behaviour. When a decrement does occur a
+    /// `liq_used` event carrying `(source, destination, remaining_liquidity)`
+    /// is emitted. The slot TTL is extended on each write.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         if env
             .storage()
@@ -946,6 +956,20 @@ impl StableRouteRouter {
             .unwrap_or(i128::MAX);
         if amount > liquidity {
             panic_with_error!(env, RouterError::InsufficientLiquidity);
+        }
+        // Debit consumed liquidity, skipping the unset sentinel (i128::MAX).
+        // When no oracle has set a liquidity value the pair is treated as
+        // unbounded — no decrement and no liq_used event are emitted.
+        if liquidity != i128::MAX {
+            let remaining = liquidity.saturating_sub(amount);
+            env.storage().persistent().set(
+                &DataKey::PairLiquidity(source.clone(), destination.clone()),
+                &remaining,
+            );
+            env.events().publish(
+                (symbol_short!("liq_used"),),
+                (source.clone(), destination.clone(), remaining),
+            );
         }
         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
         // between successive routes for the pair. The first route (no
