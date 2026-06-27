@@ -34,7 +34,7 @@ pub struct PairInfo {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// Operational admin set once at `init`.
+    /// Operational admin set once by the deploy-time constructor.
     Admin,
     /// `true` if the (source, destination) pair is a recognised route.
     /// Stored as `bool` so callers can query without distinguishing
@@ -1211,7 +1211,7 @@ mod test {
 
     /// Register the contract WITHOUT a constructor call so no admin is
     /// stored. Used to verify that admin-gated entrypoints panic with
-    /// [`RouterError::NotInitialized`] before init.
+    /// [`RouterError::NotInitialized`] before constructor initialization.
     fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
         env.mock_all_auths();
         let contract_id = env.register(StableRouteRouter, ());
