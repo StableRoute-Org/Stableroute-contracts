@@ -44,6 +44,36 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
    cargo fmt --all -- --check
    ```
 
+## Deploying
+
+Deploy the router with its admin address passed to the contract constructor.
+This sets `DataKey::Admin` in the same transaction that creates the contract,
+so there is no deployed-but-uninitialized window for another account to
+front-run.
+
+```bash
+cargo build --target wasm32-unknown-unknown --release
+
+soroban contract deploy \
+  --source <admin-key> \
+  --network <network> \
+  --wasm target/wasm32-unknown-unknown/release/stableroute_contracts.wasm \
+  -- \
+  --admin <admin-address>
+```
+
+The `<admin-key>` signs the deployment transaction. The `<admin-address>` is the
+address stored as the router admin and must authorize the constructor call.
+In local tests this same flow is represented by:
+
+```rust
+env.register(StableRouteRouter, (admin,))
+```
+
+Do **not** call `init` after deployment. `init` is retained only for legacy ABI
+compatibility and always panics with `AlreadyInitialized` (#1). The constructor
+is the only supported initialization path.
+
 ## Commands
 
 | Command | Description |
@@ -67,8 +97,8 @@ in [`src/lib.rs`](src/lib.rs).
 
 | Code | Variant | Raised by | Meaning / remedy |
 |-----:|---------|-----------|------------------|
-| 1 | `AlreadyInitialized` | `init` | Admin already set; the contract is initialized. No action. |
-| 2 | `NotInitialized` | every admin-gated entrypoint (`pause`, `set_*`, …) | Admin not set yet — call `init` first. |
+| 1 | `AlreadyInitialized` | `init` | Legacy initializer was called. The constructor already owns initialization; do not call `init` post-deploy. |
+| 2 | `NotInitialized` | every admin-gated entrypoint (`pause`, `set_*`, …) | Admin was not set by the constructor. Redeploy with the `--admin` constructor argument. |
 | 3 | `SourceEqualsDestination` | `register_pair` | A route's source and destination must differ. |
 | 4 | `FeeBpsTooHigh` | `set_pair_fee_bps` | Fee exceeds `MAX_FEE_BPS` (1000 bps = 10%). Lower the fee. |
 | 5 | `PairNotRegistered` | `compute_route_fee`, `quote_route` | Register the pair before routing/quoting. |
