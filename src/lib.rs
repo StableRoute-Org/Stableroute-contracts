@@ -409,6 +409,40 @@ impl StableRouteRouter {
             .publish((symbol_short!("queued"),), (new_admin, eta));
     }
 
+    /// Force-complete an admin handover after the timelock has elapsed,
+    /// without requiring the new admin to call `accept_admin_transfer`.
+    ///
+    /// Admin-gated. Requires that `propose_admin_transfer` was already
+    /// called with the same `new_admin` and that the timelock delay has
+    /// elapsed. Emits the same `executed` event as `accept_admin_transfer`
+    /// so indexers can treat it identically.
+    pub fn force_admin_transfer(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
+        if pending != new_admin {
+            panic_with_error!(&env, RouterError::NotPendingAdmin);
+        }
+        let eta: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminEta)
+            .unwrap_or(0);
+        if env.ledger().timestamp() < eta {
+            panic_with_error!(&env, RouterError::TimelockNotElapsed);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Admin, &new_admin.clone());
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        env.events()
+            .publish((symbol_short!("executed"),), new_admin);
+    }
+
     /// Returns the admin set at `init`, if any.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Admin)
@@ -1639,6 +1673,80 @@ mod test {
         let caller = Address::generate(&env);
         client.propose_admin_transfer(&pending);
         client.accept_admin_transfer(&caller);
+    }
+
+    // --- force_admin_transfer tests ---
+
+    #[test]
+    fn test_force_admin_transfer_success() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+        assert_eq!(client.get_admin(), Some(next_admin));
+        assert_eq!(client.get_pending_admin(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #7)")]
+    fn test_force_admin_transfer_rejects_missing_pending_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.force_admin_transfer(&next_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_force_admin_transfer_rejects_wrong_pending_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let pending = Address::generate(&env);
+        let wrong = Address::generate(&env);
+        client.propose_admin_transfer(&pending);
+        client.force_admin_transfer(&wrong);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_force_admin_transfer_blocks_early_force() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin) = setup_initialized(&env);
+        client.set_timelock(&100);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+    }
+
+    #[test]
+    fn test_force_admin_transfer_allows_after_timelock() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin) = setup_initialized(&env);
+        client.set_timelock(&100);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        env.ledger().set_timestamp(1_100);
+        client.force_admin_transfer(&next_admin);
+        assert_eq!(client.get_admin(), Some(next_admin));
+    }
+
+    #[test]
+    fn test_force_admin_transfer_emits_executed_event() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+
+        let executed_payloads = event_payloads(&env, symbol_short!("executed"));
+        assert_eq!(executed_payloads.len(), 1);
+        let event_admin: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &executed_payloads[0])
+                .expect("executed event data decodes to admin address");
+        assert_eq!(event_admin, next_admin);
     }
 
     #[test]
