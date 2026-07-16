@@ -24,6 +24,22 @@ pub struct PairInfo {
     pub last_route_at: u64,
 }
 
+/// Aggregated read of the queued admin handover: the proposed pending
+/// admin and the earliest timestamp at which it may accept.
+///
+/// Returned by [`StableRouteRouter::get_pending_admin_info`] so watchers
+/// get both slots from a single invocation. Both fields are `None` when
+/// no transfer is queued.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdminInfo {
+    /// Address proposed via `propose_admin_transfer`, if any.
+    pub pending: Option<Address>,
+    /// Earliest ledger timestamp at which the pending admin may call
+    /// `accept_admin_transfer` (`propose` time + timelock), if queued.
+    pub eta: Option<u64>,
+}
+
 /// Storage keys used by the StableRoute router.
 ///
 /// Persistent storage is used for the admin address and per-pair
@@ -352,6 +368,21 @@ impl StableRouteRouter {
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
+
+    /// Read both components of the queued admin handover in one call.
+    ///
+    /// Returns a consistent snapshot of the pending admin and its
+    /// earliest acceptance timestamp (ETA). Both fields are `None`
+    /// when no transfer is queued.
+    pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {
+        let s = env.storage().persistent();
+        PendingAdminInfo {
+            pending: s.get(&DataKey::PendingAdmin),
+            eta: s.get(&DataKey::PendingAdminEta),
+        }
+    }
+
+
 
     /// Step 2 of admin handover. The pending admin claims the role
     /// from their own key. Panics with NoPendingAdminTransfer if none
