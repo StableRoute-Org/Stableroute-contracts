@@ -1131,6 +1131,35 @@ impl StableRouteRouter {
     }
 }
 
+/// Test-only mock that re-enters the router from a nested contract call.
+///
+/// The mock stays minimal on purpose: it exists only to simulate a malicious
+/// callback path and trigger the router's reentrancy guard in a realistic
+/// nested-call shape.
+#[cfg(test)]
+#[contract]
+pub struct MaliciousReentryMock;
+
+#[cfg(test)]
+#[contractimpl]
+impl MaliciousReentryMock {
+    /// Call back into `compute_route_fee` on the target router.
+    ///
+    /// The test harness arranges for the router lock to already be held before
+    /// this entrypoint runs, so the nested router call exercises the guard as a
+    /// callback-style re-entry attempt.
+    pub fn reenter(
+        env: Env,
+        router_id: Address,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+    ) {
+        let router = StableRouteRouterClient::new(&env, &router_id);
+        router.compute_route_fee(&source, &destination, &amount);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1140,6 +1169,8 @@ mod test {
         testutils::{Address as _, Events, Ledger},
         IntoVal,
     };
+    use std::any::Any;
+    use std::string::{String, ToString};
 
     /// Register a USDC→EURC pair with `fee_bps` and unbounded liquidity,
     /// returning a ready client. Shared by the property tests below.
@@ -1148,6 +1179,12 @@ mod test {
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &fee_bps);
         client
+    }
+
+    fn panic_message(err: &(dyn Any + Send)) -> Option<String> {
+        err.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
     }
 
     proptest! {
@@ -1419,30 +1456,98 @@ mod test {
         assert_eq!(client.get_total_routes_all_time(), 2);
     }
 
-    /// When the reentrancy lock is already held, `compute_route_fee` must
-    /// reject the call with ReentrantCall (#16). We simulate the in-flight
-    /// state by setting the lock directly in the contract's storage, which
-    /// is exactly what a re-entrant inner call would observe.
+    /// A malicious nested caller must not be able to re-enter
+    /// `compute_route_fee` while the router lock is held.
     #[test]
-    #[should_panic(expected = "Error(Contract, #16)")]
-    fn test_compute_route_fee_rejects_reentry() {
+    fn test_compute_route_fee_rejects_reentry_from_mock_callback() {
         let env = Env::default();
-        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let router_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &router_id);
+        let mock_id = env.register(MaliciousReentryMock, ());
+        let mock = MaliciousReentryMockClient::new(&env, &mock_id);
+
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
 
-        // Simulate the lock being already held (as it would be mid-call).
-        env.as_contract(&contract_id, || {
+        env.as_contract(&router_id, || {
             env.storage()
                 .persistent()
                 .set(&DataKey::ReentrancyLock, &true);
         });
 
-        client.compute_route_fee(
+        // The mock now performs the nested router call from a normal contract
+        // invocation, matching the callback-driven shape we want to exercise.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mock.reenter(
+                &router_id,
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000_i128,
+            );
+        }));
+        let panic = result.expect_err("nested router call should panic");
+        let message = panic_message(&*panic).expect("panic payload should be printable");
+        assert!(
+            message.contains("Error(Contract, #16)"),
+            "unexpected panic payload: {message}"
+        );
+
+        let lock_after: bool = env.as_contract(&router_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ReentrancyLock)
+                .unwrap_or(false)
+        });
+        assert!(lock_after);
+
+        env.as_contract(&router_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ReentrancyLock, &false);
+        });
+        assert_eq!(
+            client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000_i128
+            ),
+            5_000
+        );
+    }
+
+    /// A successful route must leave the reentrancy lock cleared so
+    /// sequential legitimate calls remain possible.
+    #[test]
+    fn test_compute_route_fee_clears_reentrancy_lock_after_success() {
+        let env = Env::default();
+        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+
+        let first = client.compute_route_fee(
             &symbol_short!("USDC"),
             &symbol_short!("EURC"),
             &1_000_000_i128,
         );
+        assert_eq!(first, 5_000);
+
+        let lock_after_first: bool = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ReentrancyLock)
+                .unwrap_or(false)
+        });
+        assert!(!lock_after_first);
+
+        let second = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        assert_eq!(second, 5_000);
+        assert_eq!(client.get_total_routes_all_time(), 2);
     }
 
     #[test]

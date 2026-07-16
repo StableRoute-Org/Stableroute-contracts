@@ -143,6 +143,13 @@ tiers) and the PR checklist.
 
 ## Testing notes
 
+### Reentrancy guard test coverage
+
+The test suite includes a test-only malicious callback mock that attempts to
+re-enter `compute_route_fee` while `DataKey::ReentrancyLock` is held. This
+verifies the router rejects nested entry with `ReentrantCall` (#16) and that a
+successful route leaves the lock cleared for the next legitimate call.
+
 ## Liquidity consumption model
 
 `compute_route_fee` debits the routed `amount` from the pair's stored
