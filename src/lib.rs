@@ -6,6 +6,7 @@
 #[cfg(test)]
 extern crate std;
 
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
     Env, Symbol,
@@ -97,6 +98,10 @@ pub enum DataKey {
 pub const MAX_FEE_BPS: u32 = 1_000;
 /// Basis-point denominator: 1 bps = 1/10_000.
 pub const BPS_DENOMINATOR: i128 = 10_000;
+/// Maximum number of entries in a single batch operation
+/// (`register_pairs`, `set_pair_fees_bps`). Kept modest to bound
+/// per-transaction gas costs.
+pub const MAX_BATCH_SIZE: u32 = 100;
 
 /// Typed contract errors. Codes are append-only — never reuse or
 /// renumber a variant once it has shipped.
@@ -161,6 +166,28 @@ impl StableRouteRouter {
             .unwrap_or_else(|| panic_with_error!(env, RouterError::NotInitialized));
         admin.require_auth();
         admin
+    }
+
+    /// Require that `(source, destination)` was previously registered via
+    /// [`Self::register_pair`]; panics with
+    /// [`RouterError::PairNotRegistered`] otherwise.
+    ///
+    /// Every per-pair config setter (`set_pair_fee_bps`,
+    /// `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`)
+    /// calls this after its own admin/sign validation so a config write can
+    /// never create an orphan storage slot for a corridor an operator never
+    /// registered. Reuses the same [`RouterError::PairNotRegistered`] (#5)
+    /// that `compute_route_fee` and `quote_route` already raise, keeping
+    /// one error code for "this pair does not exist" across the contract.
+    fn require_pair_registered(env: &Env, source: &Symbol, destination: &Symbol) {
+        if !env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+            .unwrap_or(false)
+        {
+            panic_with_error!(env, RouterError::PairNotRegistered);
+        }
     }
 
     /// Acquire the reentrancy lock; panics [`RouterError::ReentrantCall`]
@@ -379,6 +406,13 @@ impl StableRouteRouter {
     /// Admin-gated; rejects `source == destination`. Idempotent: a
     /// second call with the same pair simply re-asserts the entry and
     /// is a no-op from the caller's perspective.
+    ///
+    /// **Registration-first invariant:** `set_pair_fee_bps`,
+    /// `set_pair_min_amount`, `set_pair_max_amount`, and
+    /// `set_pair_liquidity` all require the pair to already be registered
+    /// here, and panic with [`RouterError::PairNotRegistered`] (#5)
+    /// otherwise. Always call `register_pair` before configuring a
+    /// corridor's fee, bounds, or liquidity.
     pub fn register_pair(env: Env, source: Symbol, destination: Symbol) {
         if env
             .storage()
@@ -397,6 +431,45 @@ impl StableRouteRouter {
             .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
         env.events()
             .publish((symbol_short!("pair_reg"),), (source, destination));
+    }
+
+    /// Register multiple `(source, destination)` pairs in a single
+    /// admin-gated call. Each entry is validated identically to
+    /// [`Self::register_pair`] and gets its own `pair_reg` event.
+    ///
+    /// **All-or-nothing:** if any entry fails validation the entire
+    /// transaction is rolled back (Soroban transactions are atomic), so
+    /// callers must ensure every pair is valid before invoking this. The
+    /// batch must contain at least one entry; an empty batch panics with
+    /// [`RouterError::EmptyBatch`]. The batch is also capped at
+    /// [`MAX_BATCH_SIZE`] entries to bound gas; exceeding it panics with
+    /// [`RouterError::BatchTooLarge`].
+    pub fn register_pairs(env: Env, pairs: Vec<(Symbol, Symbol)>) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, RouterError::ContractPaused);
+        }
+        Self::require_admin(&env);
+        if pairs.len() == 0 {
+            panic_with_error!(&env, RouterError::EmptyBatch);
+        }
+        if pairs.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, RouterError::BatchTooLarge);
+        }
+        for (source, destination) in pairs.iter() {
+            if source == destination {
+                panic_with_error!(&env, RouterError::SourceEqualsDestination);
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+            env.events()
+                .publish((symbol_short!("pair_reg"),), (source, destination));
+        }
     }
 
     /// Returns true iff the pair is registered AND has non-zero
@@ -616,6 +689,11 @@ impl StableRouteRouter {
     /// least privilege — the frequently rotated oracle key can keep the
     /// liquidity feed fresh without holding governance power. Any other
     /// caller is rejected with [`RouterError::NotAuthorized`].
+    ///
+    /// Requires the pair to already be registered via
+    /// [`Self::register_pair`]; rejects an unregistered pair with
+    /// [`RouterError::PairNotRegistered`] (#5) so liquidity can never be
+    /// configured for a corridor that was never (or no longer) enabled.
     pub fn set_pair_liquidity(
         env: Env,
         caller: Address,
@@ -636,6 +714,7 @@ impl StableRouteRouter {
         if liquidity < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage().persistent().set(
             &DataKey::PairLiquidity(source.clone(), destination.clone()),
             &liquidity,
@@ -655,11 +734,17 @@ impl StableRouteRouter {
     }
 
     /// Admin sets the per-pair maximum routable amount.
+    ///
+    /// Requires the pair to already be registered via
+    /// [`Self::register_pair`]; rejects an unregistered pair with
+    /// [`RouterError::PairNotRegistered`] (#5) so the maximum can never be
+    /// configured for a corridor that was never (or no longer) enabled.
     pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
         Self::require_admin(&env);
         if max_amount <= 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage()
             .persistent()
             .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
@@ -674,26 +759,51 @@ impl StableRouteRouter {
     }
 
     /// Admin sets the per-pair minimum routable amount.
+    ///
+    /// Requires the pair to already be registered via
+    /// [`Self::register_pair`]; rejects an unregistered pair with
+    /// [`RouterError::PairNotRegistered`] (#5) so the minimum can never be
+    /// configured for a corridor that was never (or no longer) enabled.
     pub fn set_pair_min_amount(env: Env, source: Symbol, destination: Symbol, min_amount: i128) {
         Self::require_admin(&env);
         if min_amount < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage()
             .persistent()
             .set(&DataKey::PairMinAmount(source, destination), &min_amount);
     }
 
-    /// Unregister a previously-registered pair. Admin-gated. Idempotent.
-    /// Does not touch the configured fee — that is removed only when the
-    /// admin overwrites it back to 0 (or calls a future remove_fee).
+    /// Clear all pair-scoped config that should not survive unregister + re-register.
+    ///
+    /// This intentionally excludes route counters, cumulative volume, and last-route timestamp;
+    /// those operational-history slots are tracked separately from live pair configuration.
+    fn clear_pair_config(env: &Env, source: Symbol, destination: Symbol) {
+        let storage = env.storage().persistent();
+        storage.remove(&DataKey::PairFeeBps(source.clone(), destination.clone()));
+        storage.remove(&DataKey::PairMinAmount(source.clone(), destination.clone()));
+        storage.remove(&DataKey::PairMaxAmount(source.clone(), destination.clone()));
+        storage.remove(&DataKey::PairLiquidity(source, destination));
+    }
+
+    /// Unregister a previously-registered pair. Admin-gated and idempotent.
+    ///
+    /// Also clears the pair's fee, min amount, max amount, and liquidity config slots so
+    /// re-registering the same corridor starts from documented defaults instead of reviving
+    /// stale config.
     pub fn unregister_pair(env: Env, source: Symbol, destination: Symbol) {
         Self::require_admin(&env);
         env.storage()
             .persistent()
             .remove(&DataKey::Pair(source.clone(), destination.clone()));
+        Self::clear_pair_config(&env, source.clone(), destination.clone());
+        env.events().publish(
+            (symbol_short!("unreg"),),
+            (source.clone(), destination.clone()),
+        );
         env.events()
-            .publish((symbol_short!("unreg"),), (source, destination));
+            .publish((symbol_short!("cfg_clr"),), (source, destination));
     }
 
     /// Returns `true` iff `register_pair` has been called for this pair.
@@ -709,6 +819,11 @@ impl StableRouteRouter {
     /// Admin-gated. Rejects values above [`MAX_FEE_BPS`] with
     /// [`RouterError::FeeBpsTooHigh`]. Idempotent: setting the same
     /// fee twice is a re-assert and harmless.
+    ///
+    /// Requires the pair to already be registered via
+    /// [`Self::register_pair`]; rejects an unregistered pair with
+    /// [`RouterError::PairNotRegistered`] (#5) so the fee can never be
+    /// configured for a corridor that was never (or no longer) enabled.
     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
         if env
             .storage()
@@ -722,12 +837,53 @@ impl StableRouteRouter {
         if fee_bps > MAX_FEE_BPS {
             panic_with_error!(&env, RouterError::FeeBpsTooHigh);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage().persistent().set(
             &DataKey::PairFeeBps(source.clone(), destination.clone()),
             &fee_bps,
         );
         env.events()
             .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
+    }
+
+    /// Set the routing fee in basis points for multiple registered pairs
+    /// in a single admin-gated call. Each entry is validated identically
+    /// to [`Self::set_pair_fee_bps`] and gets its own `fee_set` event.
+    ///
+    /// **All-or-nothing:** if any entry fails validation the entire
+    /// transaction is rolled back (Soroban transactions are atomic), so
+    /// callers must ensure every entry is well-formed before invoking
+    /// this. Requires at least one entry; an empty batch panics with
+    /// [`RouterError::EmptyBatch`]. Capped at [`MAX_BATCH_SIZE`] entries;
+    /// exceeding it panics with [`RouterError::BatchTooLarge`].
+    pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, RouterError::ContractPaused);
+        }
+        Self::require_admin(&env);
+        if entries.len() == 0 {
+            panic_with_error!(&env, RouterError::EmptyBatch);
+        }
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, RouterError::BatchTooLarge);
+        }
+        for (source, destination, fee_bps) in entries.iter() {
+            if fee_bps > MAX_FEE_BPS {
+                panic_with_error!(&env, RouterError::FeeBpsTooHigh);
+            }
+            Self::require_pair_registered(&env, &source, &destination);
+            env.storage().persistent().set(
+                &DataKey::PairFeeBps(source.clone(), destination.clone()),
+                &fee_bps,
+            );
+            env.events()
+                .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
+        }
     }
 
     /// Returns the configured fee in basis points for a pair, or 0 if
@@ -755,6 +911,23 @@ impl StableRouteRouter {
     /// read-only `quote_route` is intentionally left available while
     /// paused so integrators can keep planning routes for when the router
     /// resumes.
+    ///
+    /// # Checks/effects ordering
+    ///
+    /// Registered-pair, amount-bound, liquidity, and cooldown guards all
+    /// pass before any route business effect is applied. Only after those
+    /// checks does the function debit liquidity, update counters and
+    /// timestamps, and emit route events.
+    ///
+    /// # Liquidity consumption
+    ///
+    /// After passing all pre-condition checks, the function debits `amount`
+    /// from the stored `PairLiquidity` via saturating subtraction. If the
+    /// liquidity slot is unset (i.e. reads as `i128::MAX` — the unbounded
+    /// sentinel) the decrement is skipped entirely, preserving the "no
+    /// oracle configured" behaviour. When a decrement does occur a
+    /// `liq_used` event carrying `(source, destination, remaining_liquidity)`
+    /// is emitted. The slot TTL is extended on each write.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         if env
             .storage()
@@ -768,10 +941,8 @@ impl StableRouteRouter {
             panic_with_error!(env, RouterError::AmountMustBePositive);
         }
 
-        // Acquire the reentrancy lock before any further reads or effects.
-        Self::enter_nonreentrant(&env);
-
-        // CHECKS (state-dependent preconditions, under the lock).
+        // CHECKS: all state-dependent preconditions stay read-only so a
+        // rejected route leaves no storage write or event behind.
         if !env
             .storage()
             .persistent()
@@ -804,6 +975,7 @@ impl StableRouteRouter {
         if amount > liquidity {
             panic_with_error!(env, RouterError::InsufficientLiquidity);
         }
+
         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
         // between successive routes for the pair. The first route (no
         // recorded timestamp) is always allowed; cooldown == 0 disables
@@ -830,7 +1002,25 @@ impl StableRouteRouter {
             }
         }
 
-        // EFFECTS: write the counter and timestamp, then emit the event.
+        // Acquire the reentrancy lock only after all route guards pass,
+        // immediately before the write/event phase.
+        Self::enter_nonreentrant(&env);
+
+        // EFFECTS: after all route guards above have passed, debit
+        // liquidity, write counters/timestamps, and emit events.
+        // When no oracle has set a liquidity value the pair is treated as
+        // unbounded — no decrement and no liq_used event are emitted.
+        if liquidity != i128::MAX {
+            let remaining = liquidity.saturating_sub(amount);
+            env.storage().persistent().set(
+                &DataKey::PairLiquidity(source.clone(), destination.clone()),
+                &remaining,
+            );
+            env.events().publish(
+                (symbol_short!("liq_used"),),
+                (source.clone(), destination.clone(), remaining),
+            );
+        }
         let total: u64 = env
             .storage()
             .persistent()
@@ -885,10 +1075,46 @@ impl StableRouteRouter {
         fee
     }
 
-    /// Placeholder: returns a fixed route tag for a source/destination pair.
-    /// Used by the backend to verify route integrity.
-    pub fn route_tag(_env: Env, source: Symbol, destination: Symbol) -> (Symbol, Symbol) {
-        (source, destination)
+    /// Compute a deterministic, direction-sensitive route identifier for a
+    /// `(source, destination)` pair.
+    ///
+    /// The tag is `keccak256(xdr(source) || xdr(destination))`: a stable
+    /// 32-byte digest that depends on the encoded inputs in order. Properties:
+    ///
+    /// - **Deterministic** — the same `(source, destination)` always hashes to
+    ///   the same value, so an off-chain backend can recompute it and correlate
+    ///   on-chain routes without storing a mapping.
+    /// - **Direction-sensitive** — `source` is hashed before `destination`, so
+    ///   `route_tag(USDC, EURC) != route_tag(EURC, USDC)`. Each leg of a pair
+    ///   gets its own identifier.
+    ///
+    /// Returns the digest as a [`BytesN<32>`].
+    pub fn route_tag(env: Env, source: Symbol, destination: Symbol) -> BytesN<32> {
+        // Build the pre-image deterministically: the XDR encoding of `source`
+        // followed by the XDR encoding of `destination`. Ordering the appends
+        // this way is what makes the tag direction-sensitive.
+        let mut buf = Bytes::new(&env);
+        buf.append(&source.to_xdr(&env));
+        buf.append(&destination.to_xdr(&env));
+        env.crypto().keccak256(&buf).to_bytes()
+    }
+
+    /// Replace the contract's WASM in-place so the router can be patched
+    /// without losing pair state. Admin-gated; emits an `upgraded` event
+    /// carrying the new hash so indexers and watchers can audit upgrades.
+    ///
+    /// ## Trade-off: not paused-gated
+    ///
+    /// An emergency pause should arguably still allow the admin to deploy a
+    /// fix. We therefore skip the `ContractPaused` check — a paused router
+    /// can be upgraded, which is consistent with fixing the bug that caused
+    /// the pause. The admin can already unpause, so there is no escalation
+    /// path through this exception.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env);
+        env.events()
+            .publish((symbol_short!("upgraded"),), &new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }
 
@@ -1150,6 +1376,60 @@ mod test {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+    }
+
+    // --- reentrancy guard ---
+
+    /// The normal success path must RELEASE the reentrancy lock, so two
+    /// consecutive `compute_route_fee` calls on the same pair both succeed.
+    /// If the lock leaked, the second call would panic with #16.
+    #[test]
+    fn test_compute_route_fee_releases_lock_for_consecutive_calls() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+
+        let first = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        let second = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+
+        assert_eq!(first, 5_000);
+        assert_eq!(second, 5_000);
+        assert_eq!(client.get_total_routes_all_time(), 2);
+    }
+
+    /// When the reentrancy lock is already held, `compute_route_fee` must
+    /// reject the call with ReentrantCall (#16). We simulate the in-flight
+    /// state by setting the lock directly in the contract's storage, which
+    /// is exactly what a re-entrant inner call would observe.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #16)")]
+    fn test_compute_route_fee_rejects_reentry() {
+        let env = Env::default();
+        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+
+        // Simulate the lock being already held (as it would be mid-call).
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ReentrancyLock, &true);
+        });
+
+        client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
     }
 
     #[test]
@@ -1651,6 +1931,7 @@ mod test {
         let (client, admin) = setup_initialized(&env);
         let oracle = Address::generate(&env);
         client.set_oracle(&oracle);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_liquidity(
             &admin,
             &symbol_short!("USDC"),
@@ -1941,7 +2222,7 @@ mod test_i14_pause_gating {
         testutils::{Address as _, Events},
     };
 
-    /// Register + init a router with all auths mocked.
+    /// Deploy a router with all auths mocked.
     fn setup(env: &Env) -> StableRouteRouterClient<'_> {
         env.mock_all_auths();
         let admin = Address::generate(env);
@@ -2246,7 +2527,7 @@ mod test_i18_read_surface {
         testutils::{Address as _, Ledger},
     };
 
-    fn setup(env: &Env) -> StableRouteRouterClient<'_> {
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
         env.mock_all_auths();
         let admin = Address::generate(env);
         let id = env.register(StableRouteRouter, (admin,));
@@ -2257,7 +2538,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_pair_info_defaults_for_unconfigured_pair() {
         let env = Env::default();
-        let client = setup(&env);
+        let (client, _admin) = setup(&env);
         let info = client.get_pair_info(&symbol_short!("USDC"), &symbol_short!("EURC"));
         assert_eq!(
             info,
@@ -2275,7 +2556,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_pair_info_reflects_configuration() {
         let env = Env::default();
-        let client = setup(&env);
+        let (client, admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
         client.set_pair_fee_bps(&s, &d, &25u32);
@@ -2294,7 +2575,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_is_pair_active_requires_registration_and_liquidity() {
         let env = Env::default();
-        let client = setup(&env);
+        let (client, admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         assert!(!client.is_pair_active(&s, &d));
         client.register_pair(&s, &d);
@@ -2308,7 +2589,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_quote_route_is_non_mutating_and_matches_compute() {
         let env = Env::default();
-        let client = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
         client.set_pair_fee_bps(&s, &d, &100u32);
@@ -2323,7 +2604,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_last_route_at_none_before_some_after() {
         let env = Env::default();
-        let client = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
         env.ledger().set_timestamp(424_242);
@@ -2341,8 +2622,11 @@ mod test_i18_read_surface {
 #[cfg(test)]
 mod test_i19_authorization {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
-    use soroban_sdk::{symbol_short, IntoVal};
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, MockAuth, MockAuthInvoke},
+        IntoVal,
+    };
 
     /// Register the constructor with only constructor auth for `admin`; later
     /// privileged calls are intentionally left unauthorised.
@@ -2542,5 +2826,220 @@ mod test_i41_fee_cap {
         let env = Env::default();
         let (client, _s, _d) = setup_pair(&env);
         client.set_max_fee_absolute(&-1i128);
+    }
+}
+
+#[cfg(test)]
+mod test_batch {
+    use super::*;
+    use soroban_sdk::{symbol_short, testutils::Address as _, vec};
+
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &id);
+        (client, admin)
+    }
+
+    fn setup_without_admin(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin,));
+        env.as_contract(&id, || {
+            env.storage().persistent().remove(&DataKey::Admin);
+        });
+        StableRouteRouterClient::new(env, &id)
+    }
+
+    #[test]
+    fn test_register_pairs_happy_path() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC")),
+            (symbol_short!("XLM"), symbol_short!("USDC")),
+            (symbol_short!("ETH"), symbol_short!("BTC")),
+        ]);
+        assert!(client.is_pair_registered(&symbol_short!("USDC"), &symbol_short!("EURC")));
+        assert!(client.is_pair_registered(&symbol_short!("XLM"), &symbol_short!("USDC")));
+        assert!(client.is_pair_registered(&symbol_short!("ETH"), &symbol_short!("BTC")));
+    }
+
+    #[test]
+    fn test_register_pairs_single_entry_succeeds() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![&env, (symbol_short!("USDC"), symbol_short!("EURC"))]);
+        assert!(client.is_pair_registered(&symbol_short!("USDC"), &symbol_short!("EURC")));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_register_pairs_rejects_empty_batch() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![&env]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_register_pairs_atomic_rollback_on_identity() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC")),
+            (symbol_short!("XLM"), symbol_short!("XLM")),
+            (symbol_short!("ETH"), symbol_short!("BTC")),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_register_pairs_rejects_when_paused() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.pause();
+        client.register_pairs(&vec![&env, (symbol_short!("USDC"), symbol_short!("EURC"))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #18)")]
+    fn test_register_pairs_rejects_too_large_batch() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let mut pairs = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE + 1 {
+            pairs.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+        client.register_pairs(&Vec::from_slice(&env, &pairs));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_pairs_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_without_admin(&env);
+        client.register_pairs(&vec![&env, (symbol_short!("USDC"), symbol_short!("EURC"))]);
+    }
+
+    #[test]
+    fn test_set_pair_fees_bps_happy_path() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC")),
+            (symbol_short!("XLM"), symbol_short!("USDC")),
+        ]);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+            (symbol_short!("XLM"), symbol_short!("USDC"), 50u32),
+        ]);
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            25
+        );
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("XLM"), &symbol_short!("USDC")),
+            50
+        );
+    }
+
+    #[test]
+    fn test_set_pair_fees_bps_single_entry_succeeds() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![&env, (symbol_short!("USDC"), symbol_short!("EURC"))]);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+        ]);
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            25
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_set_pair_fees_bps_rejects_empty_batch() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.set_pair_fees_bps(&vec![&env]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #4)")]
+    fn test_set_pair_fees_bps_atomic_rollback_on_high_fee() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC")),
+            (symbol_short!("XLM"), symbol_short!("USDC")),
+        ]);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+            (symbol_short!("XLM"), symbol_short!("USDC"), MAX_FEE_BPS + 1),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_fees_bps_rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_set_pair_fees_bps_rejects_when_paused() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.register_pairs(&vec![&env, (symbol_short!("USDC"), symbol_short!("EURC"))]);
+        client.pause();
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #18)")]
+    fn test_set_pair_fees_bps_rejects_too_large_batch() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let mut entries = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE + 1 {
+            entries.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+                10u32,
+            ));
+        }
+        client.set_pair_fees_bps(&Vec::from_slice(&env, &entries));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_fees_bps_panics_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_without_admin(&env);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
+        ]);
     }
 }

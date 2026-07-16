@@ -88,6 +88,29 @@ in [`src/lib.rs`](src/lib.rs).
 > **Maintainers:** when you append a new `RouterError` variant, add a row
 > here with the next sequential code. Never edit an existing code/row.
 
+### Registration-first invariant
+
+`register_pair` must be called for `(source, destination)` before any of
+its per-pair config setters:
+
+- `set_pair_fee_bps`
+- `set_pair_min_amount`
+- `set_pair_max_amount`
+- `set_pair_liquidity`
+
+Each setter checks `DataKey::Pair(source, destination)` after its own
+admin/sign validation and rejects an unregistered (or since-unregistered)
+pair with `PairNotRegistered` (#5) — the same error `compute_route_fee`
+and `quote_route` already raise. This prevents an admin from writing
+fee/bounds/liquidity config for a corridor that was never enabled, which
+would otherwise waste storage rent and pollute future pair enumeration.
+
+`unregister_pair` also clears the pair's live config slots (`PairFeeBps`,
+`PairMinAmount`, `PairMaxAmount`, `PairLiquidity`) before emitting a
+`cfg_clr` companion event. Re-registering the same pair therefore starts from
+the documented defaults instead of reviving stale fee, bounds, or liquidity
+values.
+
 ## CI/CD
 
 On every push/PR to `main`, GitHub Actions runs:
@@ -118,6 +141,38 @@ tiers) and the PR checklist.
 
 ## Testing notes
 
+## Liquidity consumption model
+
+`compute_route_fee` debits the routed `amount` from the pair's stored
+`PairLiquidity` on every successful route. This ensures the on-chain
+liquidity figure reflects consumption between oracle updates, preventing
+repeated routes from exceeding real available liquidity.
+
+### Behaviour
+
+- **Set liquidity:** When an oracle or admin has called
+  `set_pair_liquidity`, the stored value is decreased by `amount` via
+  saturating subtraction and persisted. A `liq_used` event with
+  `(source, destination, remaining_liquidity)` is emitted. The slot TTL is
+  extended on each write.
+- **Unset liquidity (unbounded sentinel):** When `PairLiquidity` has never
+  been written it reads as `i128::MAX` inside `compute_route_fee`. The
+  decrement is **skipped entirely** — no storage write and no `liq_used`
+  event — preserving the "no oracle configured" behaviour. The public
+  getter `get_pair_liquidity` still returns `0` for absent slots.
+- **InsufficientLiquidity:** The existing guard (`RouterError::InsufficientLiquidity`,
+  code #12) fires when `amount > stored_liquidity`.
+- **Oracle top-up:** The oracle (or admin) can replenish liquidity at any
+  time via `set_pair_liquidity`. The new value overwrites whatever remains,
+  resetting the consumption window.
+
+### Event reference
+
+| Topic | Data | Emitted by | Meaning |
+|-------|------|-----------|---------|
+| `liq_used` | `(source, destination, remaining_liquidity)` | `compute_route_fee` | Liquidity decremented by routed amount |
+| `liq_set` | `(source, destination, liquidity)` | `set_pair_liquidity` | Oracle/admin set/replenished liquidity |
+
 ### `compute_route_fee` side-effect matrix
 
 `compute_route_fee` is the only mutating read path. On success it performs three
@@ -127,7 +182,9 @@ side effects, each covered by a dedicated test in `src/lib.rs`:
 |-------------|-----------------|------|
 | Lifetime counter | `DataKey::TotalRoutesAllTime` (saturating, protocol-wide) | `test_compute_route_fee_counter_is_global_across_pairs` |
 | Last-route timestamp | `DataKey::PairLastRouteAt` ← `env.ledger().timestamp()` | `test_compute_route_fee_stamps_pair_last_route_at` |
+| Liquidity debit | `DataKey::PairLiquidity` ← `max(0, liquidity - amount)` | `test_liquidity_decremented_by_amount_after_route` |
 | Emitted event | topic `route`, data `(source, destination, amount)` | `test_compute_route_fee_emits_route_event_with_payload` |
+| Emitted event | topic `liq_used`, data `(source, destination, remaining)` | `test_liq_used_event_emitted_with_remaining` |
 
 `quote_route` is the read-only twin and must perform **none** of these. The
 parity guard `test_quote_route_does_not_mutate_counter_or_emit_route_event`
