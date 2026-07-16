@@ -2203,21 +2203,61 @@ mod test {
 
     // --- #20: init front-running hardening ---
 
-    /// The constructor sets the admin atomically at deploy time — there is
-    /// no deployed-but-uninitialized window.
+    /// Deploy must be observable from the raw event buffer: a fresh
+    /// `register(StableRouteRouter, (admin,))` should emit exactly one
+    /// `init` event carrying the constructor's admin, and the admin must be
+    /// readable immediately without any legacy `init` call.
     #[test]
-    fn test_constructor_sets_admin_at_deploy() {
+    fn test_constructor_emits_single_init_event_with_admin_payload() {
+        use soroban_sdk::{
+            xdr::{ContractEventBody, ScVal},
+            TryFromVal,
+        };
+
         let env = Env::default();
-        let (client, admin) = setup_initialized(&env);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+
+        let all_events = env.events().all();
+        let events = all_events.events();
+        assert_eq!(events.len(), 1, "constructor emits exactly one event");
+
+        let ContractEventBody::V0(body) = &events[0].body;
+        let topics = body.topics.as_slice();
+        assert_eq!(topics.len(), 1, "init event has a single topic");
+
+        let ScVal::Symbol(raw_topic) = &topics[0] else {
+            panic!("constructor event topic decodes to a symbol");
+        };
+        let topic = Symbol::try_from_val(&env, raw_topic)
+            .expect("constructor event topic decodes to Symbol");
+        assert_eq!(topic, symbol_short!("init"));
+
+        let init_admin: Address =
+            TryFromVal::try_from_val(&env, &body.data).expect("init event data decodes to admin");
+        assert_eq!(init_admin, admin);
         assert_eq!(client.get_admin(), Some(admin));
     }
 
-    /// An attacker who observes the freshly deployed router cannot seize
-    /// the admin role by calling the legacy `init`: it always rejects with
-    /// AlreadyInitialized (#1) because the slot is already populated.
+    /// Even the original constructor admin cannot re-run legacy `init`
+    /// after deploy; the constructor/init split is permanent and `init`
+    /// must always preserve `AlreadyInitialized` (#1).
     #[test]
     #[should_panic(expected = "Error(Contract, #1)")]
-    fn test_attacker_cannot_seize_admin_via_init() {
+    fn test_post_deploy_init_rejects_original_admin() {
+        let env = Env::default();
+        let (client, admin) = setup_initialized(&env);
+        client.init(&admin);
+    }
+
+    /// Any other address is equally unable to seize the router with legacy
+    /// `init`; once deployed, admin control can only change through the
+    /// governed transfer flow.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_post_deploy_init_rejects_different_address() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         let attacker = Address::generate(&env);
@@ -2995,7 +3035,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_pair_info_reflects_configuration() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
         client.set_pair_fee_bps(&s, &d, &25u32);
@@ -3014,7 +3054,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_is_pair_active_requires_registration_and_liquidity() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         assert!(!client.is_pair_active(&s, &d));
         client.register_pair(&s, &d);

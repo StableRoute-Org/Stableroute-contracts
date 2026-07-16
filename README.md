@@ -143,6 +143,23 @@ tiers) and the PR checklist.
 
 ## Testing notes
 
+### Constructor / legacy `init` matrix
+
+Constructor coverage now treats deployment as a security boundary, not just a
+storage write:
+
+- A fresh `env.register(StableRouteRouter, (admin,))` test asserts
+  `env.events().all()` contains exactly one event, with the single topic
+  `init` and the constructor admin as the payload.
+- The same deploy-only path asserts `get_admin()` returns the constructor's
+  admin immediately, with no follow-up `init` call.
+- Post-deploy `init(addr)` is pinned to fail with `AlreadyInitialized` (#1)
+  for both the original admin and any different address.
+
+Security assumption covered by this matrix: router deployment is observable to
+indexers through the emitted `init` event, while legacy `init` can never be
+used to re-seize or rotate admin after deployment.
+
 ## Liquidity consumption model
 
 `compute_route_fee` debits the routed `amount` from the pair's stored
