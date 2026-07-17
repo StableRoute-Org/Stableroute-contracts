@@ -187,12 +187,22 @@ tiers) and the PR checklist.
 
 ## Testing notes
 
-### Reentrancy guard test coverage
+### Constructor / legacy `init` matrix
 
-The test suite includes a test-only malicious callback mock that attempts to
-re-enter `compute_route_fee` while `DataKey::ReentrancyLock` is held. This
-verifies the router rejects nested entry with `ReentrantCall` (#16) and that a
-successful route leaves the lock cleared for the next legitimate call.
+Constructor coverage now treats deployment as a security boundary, not just a
+storage write:
+
+- A fresh `env.register(StableRouteRouter, (admin,))` test asserts
+  `env.events().all()` contains exactly one event, with the single topic
+  `init` and the constructor admin as the payload.
+- The same deploy-only path asserts `get_admin()` returns the constructor's
+  admin immediately, with no follow-up `init` call.
+- Post-deploy `init(addr)` is pinned to fail with `AlreadyInitialized` (#1)
+  for both the original admin and any different address.
+
+Security assumption covered by this matrix: router deployment is observable to
+indexers through the emitted `init` event, while legacy `init` can never be
+used to re-seize or rotate admin after deployment.
 
 ## Liquidity consumption model
 
