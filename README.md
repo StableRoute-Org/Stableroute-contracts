@@ -73,14 +73,14 @@ in [`src/lib.rs`](src/lib.rs).
 | 4 | `FeeBpsTooHigh` | `set_pair_fee_bps` | Fee exceeds `MAX_FEE_BPS` (1000 bps = 10%). Lower the fee. |
 | 5 | `PairNotRegistered` | `compute_route_fee`, `quote_route` | Register the pair before routing/quoting. |
 | 6 | `AmountMustBePositive` | `compute_route_fee`, `quote_route`, `set_pair_liquidity`, `set_pair_min_amount`, `set_pair_max_amount` | Amount/value must be positive (or non-negative where noted). |
-| 7 | `NoPendingAdminTransfer` | `accept_admin_transfer` | No handover is pending; nothing to accept. |
-| 8 | `NotPendingAdmin` | `accept_admin_transfer` | Caller is not the proposed pending admin. |
+| 7 | `NoPendingAdminTransfer` | `accept_admin_transfer`, `force_admin_transfer` | No handover is pending; nothing to accept/force. |
+| 8 | `NotPendingAdmin` | `accept_admin_transfer`, `force_admin_transfer` | Caller is not the proposed pending admin, or `force_admin_transfer` was called with the wrong new_admin. |
 | 9 | `ContractPaused` | state-mutating entrypoints (`register_pair`, `set_pair_fee_bps`, …) | Router is paused; retry after `unpause`. |
 | 10 | `AmountBelowMin` | `compute_route_fee` | Amount is below the pair's configured minimum. |
 | 11 | `AmountAboveMax` | `compute_route_fee` | Amount is above the pair's configured maximum. |
 | 12 | `InsufficientLiquidity` | `compute_route_fee` | Reported pair liquidity is below the requested amount. |
 | 13 | `MigrationVersionMismatch` | `migrate_v1_to_v2` | Schema is not at v1; migration already applied. |
-| 14 | `TimelockNotElapsed` | `accept_admin_transfer` | Governance timelock has not elapsed yet; retry after the queued ETA. |
+| 14 | `TimelockNotElapsed` | `accept_admin_transfer`, `force_admin_transfer` | Governance timelock has not elapsed yet; retry after the queued ETA. |
 | 15 | `NotAuthorized` | `set_pair_liquidity` | Caller is neither the admin nor the configured oracle. |
 | 16 | `ReentrantCall` | `compute_route_fee` | Route accounting was re-entered while locked; retry only after the first call completes. |
 | 17 | `RouteCooldownActive` | `compute_route_fee` | Pair cooldown has not elapsed since the previous routed amount. |
@@ -281,13 +281,35 @@ never-registered pair stays a clean no-op while still emitting the lifecycle
 and config-clear events, and re-registering after unregister restores the pair
 with fee, bounds, and liquidity reset to their documented defaults.
 
-Metrics behave differently from config: `test_unregister_then_reregister_preserves_metrics_by_default`
-confirms `PairRouteCount`/`PairVolume`/`PairLastRouteAt` survive an
-unregister + re-register cycle unchanged, while
-`test_purge_pair_metrics_resets_counters_and_emits_event` and
-`test_purge_pair_metrics_does_not_touch_registration_or_config` confirm the
-explicit `purge_pair_metrics` entrypoint zeroes only those three metrics
-slots without disturbing registration or config.
+## Admin transfer flow
+
+The router supports two admin handover paths:
+
+1. **Two-step (default):** `propose_admin_transfer` → `accept_admin_transfer` —
+   requires the new admin to call `accept_admin_transfer` to complete the
+   handover. This prevents accidentally locking the contract with a key that
+   cannot sign.
+2. **Force (timelocked):** `propose_admin_transfer` → `force_admin_transfer` —
+   allows the current admin to complete the handover after the governance
+   timelock has elapsed, without requiring the new admin to sign. This is a
+   recovery path for cases where the new admin key is lost or cannot sign
+   (e.g., a multisig that requires multiple signatures to call `accept_admin_transfer`).
+
+### Force transfer constraints
+
+- `force_admin_transfer` is **admin-gated** (requires the current admin's signature).
+- It **requires a prior `propose_admin_transfer`** for the same `new_admin`.
+- It **honors the governance timelock**: the timelock delay must have elapsed
+  since `propose_admin_transfer` was called (checked via `PendingAdminEta`).
+- It emits the same `executed` event as `accept_admin_transfer`, so indexers
+  treat both paths identically.
+
+### Security trade-off
+
+The force path removes the new admin's "accept" check but preserves the
+timelock as a safety mechanism. The governance timelock ensures watchers have
+time to react to a pending transfer before it can complete, even via the force
+path.
 
 ## Upgrades
 
