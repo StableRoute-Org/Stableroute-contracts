@@ -1101,8 +1101,15 @@ impl StableRouteRouter {
     ///   `route_tag(USDC, EURC) != route_tag(EURC, USDC)`. Each leg of a pair
     ///   gets its own identifier.
     ///
+    /// Identical source/destination inputs are rejected with
+    /// [`RouterError::SourceEqualsDestination`], matching `register_pair`.
+    ///
     /// Returns the digest as a [`BytesN<32>`].
     pub fn route_tag(env: Env, source: Symbol, destination: Symbol) -> BytesN<32> {
+        if source == destination {
+            panic_with_error!(&env, RouterError::SourceEqualsDestination);
+        }
+
         // Build the pre-image deterministically: the XDR encoding of `source`
         // followed by the XDR encoding of `destination`. Ordering the appends
         // this way is what makes the tag direction-sensitive.
@@ -1268,6 +1275,18 @@ mod test {
         // Distinct pairs produce distinct tags.
         let other = client.route_tag(&symbol_short!("USDC"), &symbol_short!("XLM"));
         assert_ne!(tag_a, other);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_route_tag_rejects_identical_assets() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+
+        client.route_tag(&symbol_short!("USDC"), &symbol_short!("USDC"));
     }
 
     #[test]

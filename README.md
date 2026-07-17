@@ -56,6 +56,20 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
 
+## Route identifiers
+
+`route_tag(source, destination)` returns a deterministic `BytesN<32>` route
+identifier for off-chain correlation. The preimage is the XDR encoding of
+`source` followed by the XDR encoding of `destination`, hashed with
+`env.crypto().keccak256`.
+
+- The tag is deterministic: the same pair always produces the same digest.
+- The tag is direction-sensitive: `USDC -> EURC` differs from `EURC -> USDC`.
+- Identical source/destination inputs are rejected with
+  `RouterError::SourceEqualsDestination` (#3), matching `register_pair`.
+- No secret material is included in the preimage; the digest provides a stable,
+  collision-resistant identifier for the symbol domain, not confidentiality.
+
 ## Error reference (`RouterError`)
 
 Every contract panic surfaces to clients as `Error(Contract, #N)`. The

@@ -75,7 +75,7 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `quote_route` | none | `source, destination: Symbol, amount: i128` | `(i128 fee, i128 net)` | `AmountMustBePositive` (#6), `PairNotRegistered` (#5) | — |
 | `get_pair_last_route_at` | none | `source, destination: Symbol` | `Option<u64>` | — | — |
 | `get_total_routes_all_time` | none | — | `u64` | — | — |
-| `route_tag` | none | `source, destination: Symbol` | `(Symbol, Symbol)` | — | — |
+| `route_tag` | none | `source, destination: Symbol` | `BytesN<32>` | `SourceEqualsDestination` (#3) | — |
 
 ## Event catalog
 
