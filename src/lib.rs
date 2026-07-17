@@ -24,25 +24,20 @@ pub struct PairInfo {
     pub last_route_at: u64,
 }
 
-/// Extended pair info including per-pair slots added after the original
-/// `PairInfo` shipped. ABI-stable complement to [`PairInfo`]; dashboards
-/// should prefer this over issuing individual getter calls.
+/// Aggregated read of the queued admin handover: the proposed pending
+/// admin and the earliest timestamp at which it may accept.
+///
+/// Returned by [`StableRouteRouter::get_pending_admin_info`] so watchers
+/// get both slots from a single invocation. Both fields are `None` when
+/// no transfer is queued.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PairInfoExt {
-    /// Base fields reproduced from [`PairInfo`].
-    pub registered: bool,
-    pub fee_bps: u32,
-    pub min_amount: i128,
-    pub max_amount: i128,
-    pub liquidity: i128,
-    pub last_route_at: u64,
-    /// Per-pair route cooldown in seconds (0 = disabled).
-    pub cooldown_secs: u64,
-    /// Lifetime count of `compute_route_fee` invocations for this pair.
-    pub route_count: u64,
-    /// Cumulative routed volume in source units for this pair.
-    pub volume: i128,
+pub struct PendingAdminInfo {
+    /// Address proposed via `propose_admin_transfer`, if any.
+    pub pending: Option<Address>,
+    /// Earliest ledger timestamp at which the pending admin may call
+    /// `accept_admin_transfer` (`propose` time + timelock), if queued.
+    pub eta: Option<u64>,
 }
 
 /// Storage keys used by the StableRoute router.
@@ -385,6 +380,21 @@ impl StableRouteRouter {
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
+
+    /// Read both components of the queued admin handover in one call.
+    ///
+    /// Returns a consistent snapshot of the pending admin and its
+    /// earliest acceptance timestamp (ETA). Both fields are `None`
+    /// when no transfer is queued.
+    pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {
+        let s = env.storage().persistent();
+        PendingAdminInfo {
+            pending: s.get(&DataKey::PendingAdmin),
+            eta: s.get(&DataKey::PendingAdminEta),
+        }
+    }
+
+
 
     /// Step 2 of admin handover. The pending admin claims the role
     /// from their own key. Panics with NoPendingAdminTransfer if none
