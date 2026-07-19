@@ -12,6 +12,7 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
   reference for every on-chain storage slot: key shape, value type, tier,
   default-when-absent, reader/writer entrypoints, and TTL classification.
 - **[ABI reference](docs/abi.md)** — generated client-facing interface.
+- **[Deployment Guide](docs/deployment.md)** — covers constructor deployment and the legacy `init` trap.
 
 ## Security
 
