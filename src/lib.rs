@@ -1181,27 +1181,34 @@ impl StableRouteRouter {
     /// `liq_used` event carrying `(source, destination, remaining_liquidity)`
     /// is emitted. The slot TTL is extended on each write.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
+        // Acquire the reentrancy lock at the very start so that every exit
+        // path — success or panic — can explicitly release it. This ensures
+        // future refactors that add new checks after this point cannot
+        // accidentally leak the lock.
+        Self::enter_nonreentrant(&env);
+
         if env
             .storage()
             .persistent()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
+            Self::exit_nonreentrant(&env);
             panic_with_error!(&env, RouterError::ContractPaused);
         }
         if amount <= 0 {
-            panic_with_error!(env, RouterError::AmountMustBePositive);
+            Self::exit_nonreentrant(&env);
+            panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
 
-        // CHECKS: all state-dependent preconditions stay read-only so a
-        // rejected route leaves no storage write or event behind.
         if !env
             .storage()
             .persistent()
             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
             .unwrap_or(false)
         {
-            panic_with_error!(env, RouterError::PairNotRegistered);
+            Self::exit_nonreentrant(&env);
+            panic_with_error!(&env, RouterError::PairNotRegistered);
         }
         let min_amount: i128 = env
             .storage()
@@ -1209,7 +1216,8 @@ impl StableRouteRouter {
             .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
             .unwrap_or(0);
         if amount < min_amount {
-            panic_with_error!(env, RouterError::AmountBelowMin);
+            Self::exit_nonreentrant(&env);
+            panic_with_error!(&env, RouterError::AmountBelowMin);
         }
         let max_amount: i128 = env
             .storage()
@@ -1217,7 +1225,8 @@ impl StableRouteRouter {
             .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
             .unwrap_or(i128::MAX);
         if amount > max_amount {
-            panic_with_error!(env, RouterError::AmountAboveMax);
+            Self::exit_nonreentrant(&env);
+            panic_with_error!(&env, RouterError::AmountAboveMax);
         }
         let liquidity: i128 = env
             .storage()
@@ -1225,7 +1234,8 @@ impl StableRouteRouter {
             .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
             .unwrap_or(i128::MAX);
         if amount > liquidity {
-            panic_with_error!(env, RouterError::InsufficientLiquidity);
+            Self::exit_nonreentrant(&env);
+            panic_with_error!(&env, RouterError::InsufficientLiquidity);
         }
 
         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
@@ -1254,14 +1264,11 @@ impl StableRouteRouter {
                 ))
             {
                 if env.ledger().timestamp() < last + cooldown {
+                    Self::exit_nonreentrant(&env);
                     panic_with_error!(&env, RouterError::RouteCooldownActive);
                 }
             }
         }
-
-        // Acquire the reentrancy lock only after all route guards pass,
-        // immediately before the write/event phase.
-        Self::enter_nonreentrant(&env);
 
         // EFFECTS: after all route guards above have passed, debit
         // liquidity, write counters/timestamps, and emit events.
