@@ -13,6 +13,35 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
   default-when-absent, reader/writer entrypoints, and TTL classification.
 - **[ABI reference](docs/abi.md)** — generated client-facing interface.
 
+## Storage tiers
+
+Contract state lives in two Soroban storage tiers:
+
+- **Instance storage** -- `DataKey::Admin`, `DataKey::PendingAdmin`, and
+  `DataKey::Paused`. These are the hot globals: every admin-gated
+  entrypoint reads `Admin`, and every state-changing entrypoint reads
+  `Paused` before doing anything else. Bundling them with the contract
+  instance avoids a separate persistent-storage read (and its own TTL
+  check) on every call. Every write to one of these three keys also
+  extends the instance's TTL via
+  `env.storage().instance().extend_ttl(...)`, so the instance -- and
+  these singletons with it -- never archives as long as the contract
+  keeps seeing admin/pause/transfer traffic.
+- **Persistent storage** -- every other key: per-pair config and metrics
+  (`Pair`, `PairFeeBps`, `PairMinAmount`, `PairMaxAmount`,
+  `PairLiquidity`, `PairCooldown`, `PairRouteCount`, `PairVolume`,
+  `PairLastRouteAt`), and less-hot singletons (`FeeRecipient`,
+  `TotalRoutesAllTime`, `Timelock`, `PendingAdminEta`, `SchemaVersion`,
+  `ReentrancyLock`, `MaxFeeAbsolute`, `Oracle`).
+
+`PendingAdminEta` stays in persistent storage even though `PendingAdmin`
+moved to instance: it's only read during an already-queued handover, not
+on every call, so it doesn't carry its weight as a hot global.
+
+See **[docs/storage.md](docs/storage.md)** for the full key-by-key
+reference (value type, default-when-absent, reader/writer entrypoints,
+and TTL classification).
+
 ## Security
 
 See **[`SECURITY.md`](SECURITY.md)** for the router's trust model (single

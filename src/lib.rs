@@ -57,8 +57,13 @@ pub struct PendingAdminInfo {
     pub eta: Option<u64>,
 }
 
-/// Storage keys used by the StableRoute router. All twenty variants live
-/// in persistent storage — no instance or temporary storage is used today.
+/// Storage keys used by the StableRoute router.
+///
+/// Twenty variants live in **persistent** storage (per-pair keyed data and
+/// less-hot singletons). Three — `Admin`, `PendingAdmin`, and `Paused` —
+/// live in **instance** storage: they are read on every admin entrypoint
+/// or every gated write, so bundling them with the contract instance
+/// avoids a separate persistent-storage read/TTL check on every call.
 ///
 /// See [`docs/storage.md`] for the authoritative reference: key shape,
 /// value type, default-when-absent, reader/writer entrypoints, and TTL
@@ -77,7 +82,7 @@ pub struct PendingAdminInfo {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// Operational admin (singleton, `Address`, persistent).
+    /// Operational admin (singleton, `Address`, **instance** — hot global).
     /// Set once by `__constructor`; only changed by a two-step handover
     /// (`propose_admin_transfer` → `accept_admin_transfer`).
     /// Absent reads panic with `NotInitialized` (#2).
@@ -91,12 +96,13 @@ pub enum DataKey {
     /// are rejected at write time. Defaults to `0` (free).
     PairFeeBps(Symbol, Symbol),
     /// Pending admin proposed via `propose_admin_transfer` (singleton,
-    /// `Address`, persistent). Two-step handover guards against locking
-    /// the contract with a bad key. Absent ↔ `None` (no handover queued).
+    /// `Address`, **instance** — hot global). Two-step handover guards
+    /// against locking the contract with a bad key. Absent ↔ `None` (no
+    /// handover queued).
     PendingAdmin,
-    /// `true` when the router is paused (singleton, `bool`, persistent).
-    /// All state-changing entrypoints reject calls until an unpause.
-    /// Defaults to `false` (not paused).
+    /// `true` when the router is paused (singleton, `bool`, **instance**
+    /// — hot global). All state-changing entrypoints reject calls until
+    /// an unpause. Defaults to `false` (not paused).
     Paused,
     /// Minimum routable amount per pair in source units (keyed per-pair,
     /// `i128`, persistent). `compute_route_fee` rejects amounts below the
@@ -192,6 +198,20 @@ pub const MAX_BATCH_SIZE: u32 = 100;
 /// `u64` for the foreseeable future.
 pub const MAX_COOLDOWN_SECS: u64 = 2_592_000;
 
+/// Ledger-count threshold below which a hot-state write (see
+/// [`StableRouteRouter::bump_instance_ttl`]) renews the contract
+/// instance's TTL. Assuming ~5s average ledger close time, this is
+/// roughly 30 days. Kept well above [`INSTANCE_TTL_EXTEND_TO`]'s renewal
+/// point is not required — the host clamps automatically — but choosing
+/// a threshold this generous means the instance is topped up far before
+/// it could ever approach archival.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+/// Ledger count the contract instance's TTL is extended to whenever a
+/// hot-state write triggers a renewal (see
+/// [`StableRouteRouter::bump_instance_ttl`]). Assuming ~5s average
+/// ledger close time, this is roughly 60 days.
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 1_036_800;
+
 /// Typed contract errors. Codes are append-only — never reuse or
 /// renumber a variant once it has shipped.
 #[contracterror]
@@ -259,11 +279,21 @@ impl StableRouteRouter {
     fn require_admin(env: &Env) -> Address {
         let admin: Address = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(env, RouterError::NotInitialized));
         admin.require_auth();
         admin
+    }
+
+    /// Renew the contract instance's TTL. Called after every write to a
+    /// hot-global instance slot (`Admin`, `PendingAdmin`, `Paused`) so the
+    /// instance — and therefore these singletons — never archives as long
+    /// as the contract keeps receiving admin/pause/transfer traffic.
+    fn bump_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     }
 
     /// Require that `(source, destination)` was previously registered via
@@ -360,7 +390,8 @@ impl StableRouteRouter {
     /// emits the `init` event for indexers.
     pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::bump_instance_ttl(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
 
@@ -380,7 +411,7 @@ impl StableRouteRouter {
     /// Returns true iff the router is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
     }
@@ -388,7 +419,8 @@ impl StableRouteRouter {
     /// Resume after a pause. Admin-gated and idempotent.
     pub fn unpause(env: Env) {
         Self::require_admin(&env);
-        env.storage().persistent().set(&DataKey::Paused, &false);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Self::bump_instance_ttl(&env);
         env.events().publish((symbol_short!("paused"),), false);
     }
 
@@ -396,7 +428,8 @@ impl StableRouteRouter {
     /// then panic with ContractPaused.
     pub fn pause(env: Env) {
         Self::require_admin(&env);
-        env.storage().persistent().set(&DataKey::Paused, &true);
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Self::bump_instance_ttl(&env);
         env.events().publish((symbol_short!("paused"),), true);
     }
 
@@ -429,13 +462,14 @@ impl StableRouteRouter {
     /// queued eta. No-op if none is pending.
     pub fn cancel_admin_transfer(env: Env) {
         Self::require_admin(&env);
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        Self::bump_instance_ttl(&env);
     }
 
     /// Read the pending admin if any.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::PendingAdmin)
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Read both components of the queued admin handover in one call.
@@ -444,10 +478,9 @@ impl StableRouteRouter {
     /// earliest acceptance timestamp (ETA). Both fields are `None`
     /// when no transfer is queued.
     pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {
-        let s = env.storage().persistent();
         PendingAdminInfo {
-            pending: s.get(&DataKey::PendingAdmin),
-            eta: s.get(&DataKey::PendingAdminEta),
+            pending: env.storage().instance().get(&DataKey::PendingAdmin),
+            eta: env.storage().persistent().get(&DataKey::PendingAdminEta),
         }
     }
 
@@ -458,7 +491,7 @@ impl StableRouteRouter {
         caller.require_auth();
         let pending: Address = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
         if pending != caller {
@@ -475,10 +508,11 @@ impl StableRouteRouter {
             panic_with_error!(&env, RouterError::TimelockNotElapsed);
         }
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::Admin, &caller.clone());
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        Self::bump_instance_ttl(&env);
         env.events().publish((symbol_short!("executed"),), caller);
     }
 
@@ -498,11 +532,12 @@ impl StableRouteRouter {
             .unwrap_or(0);
         let eta = env.ledger().timestamp().saturating_add(delay);
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::PendingAdmin, &new_admin.clone());
         env.storage()
             .persistent()
             .set(&DataKey::PendingAdminEta, &eta);
+        Self::bump_instance_ttl(&env);
         env.events()
             .publish((symbol_short!("queued"),), (new_admin, eta));
     }
@@ -518,7 +553,7 @@ impl StableRouteRouter {
         Self::require_admin(&env);
         let pending: Address = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::PendingAdmin)
             .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
         if pending != new_admin {
@@ -533,17 +568,18 @@ impl StableRouteRouter {
             panic_with_error!(&env, RouterError::TimelockNotElapsed);
         }
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::Admin, &new_admin.clone());
-        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        Self::bump_instance_ttl(&env);
         env.events()
             .publish((symbol_short!("executed"),), new_admin);
     }
 
     /// Returns the admin set at `init`, if any.
     pub fn get_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&DataKey::Admin)
+        env.storage().instance().get(&DataKey::Admin)
     }
 
     /// Register `(source, destination)` as a recognised route.
@@ -561,7 +597,7 @@ impl StableRouteRouter {
     pub fn register_pair(env: Env, source: Symbol, destination: Symbol) {
         if env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
@@ -592,7 +628,7 @@ impl StableRouteRouter {
     pub fn register_pairs(env: Env, pairs: Vec<(Symbol, Symbol)>) {
         if env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
@@ -927,7 +963,7 @@ impl StableRouteRouter {
         caller.require_auth();
         let admin: Address = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
         let oracle: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
@@ -1079,7 +1115,7 @@ impl StableRouteRouter {
     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
         if env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
@@ -1111,7 +1147,7 @@ impl StableRouteRouter {
     pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
         if env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
@@ -1183,7 +1219,7 @@ impl StableRouteRouter {
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         if env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
         {
@@ -2732,7 +2768,7 @@ mod test {
         let env = Env::default();
         let (client, _admin, contract_id) = setup_initialized_with_id(&env);
         env.as_contract(&contract_id, || {
-            env.storage().persistent().remove(&DataKey::Admin);
+            env.storage().instance().remove(&DataKey::Admin);
         });
         client.remove_oracle();
     }
@@ -3827,7 +3863,7 @@ mod test_batch {
         let admin = Address::generate(env);
         let id = env.register(StableRouteRouter, (admin,));
         env.as_contract(&id, || {
-            env.storage().persistent().remove(&DataKey::Admin);
+            env.storage().instance().remove(&DataKey::Admin);
         });
         StableRouteRouterClient::new(env, &id)
     }
@@ -4056,7 +4092,7 @@ mod test_i153_version_uninitialized {
         let client = StableRouteRouterClient::new(env, &contract_id);
         // Remove the admin from storage to simulate uninitialized state.
         env.as_contract(&contract_id, || {
-            env.storage().persistent().remove(&DataKey::Admin);
+            env.storage().instance().remove(&DataKey::Admin);
         });
         client
     }
