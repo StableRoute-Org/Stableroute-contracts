@@ -2880,6 +2880,106 @@ mod test {
         assert_eq!(route_event_payloads(&env).len(), route_events_before);
     }
 
+    #[test]
+    fn test_compute_route_fee_increments_pair_route_count() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 0u32);
+
+        assert_eq!(client.get_pair_route_count(&src, &dest), 0);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+        assert_eq!(client.get_pair_route_count(&src, &dest), 1);
+        client.compute_route_fee(&src, &dest, &2_000_i128);
+        assert_eq!(client.get_pair_route_count(&src, &dest), 2);
+    }
+
+    #[test]
+    fn test_compute_route_fee_accumulates_pair_volume() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 0u32);
+
+        assert_eq!(client.get_pair_volume(&src, &dest), 0);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+        assert_eq!(client.get_pair_volume(&src, &dest), 1_000);
+        client.compute_route_fee(&src, &dest, &2_500_i128);
+        assert_eq!(client.get_pair_volume(&src, &dest), 3_500);
+    }
+
+    #[test]
+    fn test_compute_route_fee_pair_metrics_are_per_pair() {
+        let env = Env::default();
+        let a_src = symbol_short!("USDC");
+        let a_dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &a_src, &a_dest, 0u32);
+
+        let b_src = symbol_short!("XLM");
+        let b_dest = symbol_short!("USDC");
+        client.register_pair(&b_src, &b_dest);
+
+        assert_eq!(client.get_pair_route_count(&a_src, &a_dest), 0);
+        assert_eq!(client.get_pair_volume(&a_src, &a_dest), 0);
+        assert_eq!(client.get_pair_route_count(&b_src, &b_dest), 0);
+        assert_eq!(client.get_pair_volume(&b_src, &b_dest), 0);
+
+        client.compute_route_fee(&a_src, &a_dest, &1_000_i128);
+
+        // Pair A metrics incremented.
+        assert_eq!(client.get_pair_route_count(&a_src, &a_dest), 1);
+        assert_eq!(client.get_pair_volume(&a_src, &a_dest), 1_000);
+        // Pair B metrics untouched.
+        assert_eq!(client.get_pair_route_count(&b_src, &b_dest), 0);
+        assert_eq!(client.get_pair_volume(&b_src, &b_dest), 0);
+    }
+
+    #[test]
+    fn test_compute_route_fee_emits_liq_used_event_on_debit() {
+        let env = Env::default();
+        let (client, admin) = setup_initialized(&env);
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        client.register_pair(&src, &dest);
+        client.set_pair_fee_bps(&src, &dest, &0u32);
+        client.set_pair_liquidity(&admin, &src, &dest, &1_000_i128);
+
+        client.compute_route_fee(&src, &dest, &300_i128);
+
+        let payloads = event_payloads(&env, symbol_short!("liq_used"));
+        assert_eq!(payloads.len(), 1, "exactly one liq_used event expected");
+        let decoded: (Symbol, Symbol, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+                .expect("liq_used data decodes to (Symbol, Symbol, i128)");
+        // remaining = 1_000 - 300 = 700
+        assert_eq!(decoded, (src.clone(), dest.clone(), 700i128));
+
+        // A second route emits another liq_used with the updated remaining.
+        client.compute_route_fee(&src, &dest, &200_i128);
+        let payloads = event_payloads(&env, symbol_short!("liq_used"));
+        assert_eq!(payloads.len(), 2, "two liq_used events across two routes");
+        let decoded2: (Symbol, Symbol, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[1])
+                .expect("second liq_used data decodes correctly");
+        assert_eq!(decoded2, (src, dest, 500i128));
+    }
+
+    #[test]
+    fn test_compute_route_fee_no_liq_used_event_on_unbounded() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        client.register_pair(&src, &dest);
+        // No liquidity set → defaults to i128::MAX sentinel → unbounded.
+        // The debit is skipped, so no liq_used event should be emitted.
+
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+
+        let payloads = event_payloads(&env, symbol_short!("liq_used"));
+        assert_eq!(payloads.len(), 0, "no liq_used event on unbounded path");
+    }
+
     // --- require_admin helper contract tests ---
 
     /// After the refactor, every admin-gated entrypoint must still reject a
