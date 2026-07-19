@@ -57,71 +57,118 @@ pub struct PendingAdminInfo {
     pub eta: Option<u64>,
 }
 
-/// Storage keys used by the StableRoute router.
+/// Storage keys used by the StableRoute router. All twenty variants live
+/// in persistent storage — no instance or temporary storage is used today.
 ///
-/// Persistent storage is used for the admin address and per-pair
-/// configuration; these values change rarely (governance flow) and need
-/// to survive the contract's instance TTL window. Instance storage is
-/// reserved for hot configuration that we expect every invocation to
-/// touch — none yet.
+/// See [`docs/storage.md`] for the authoritative reference: key shape,
+/// value type, default-when-absent, reader/writer entrypoints, and TTL
+/// classification (Static / Config / Hot).
+///
+/// ## Sentinel conventions
+///
+/// - Absent `bool`  → `false` (pair registration, paused, reentrancy lock).
+/// - `i128::MAX`      → "unbounded" sentinel for `PairMaxAmount` and for
+///   liquidity *inside `compute_route_fee` only*.
+/// - `0`              → default for counters, fees, timestamps (as `u64`),
+///   `PairMinAmount`, and cooldowns.
+/// - Absent `Option`  → `None` (admin, pending admin, fee recipient,
+///   last-route timestamp, max fee absolute, oracle).
+/// - `SchemaVersion`  → `1` when absent (the implicit pre-migration default).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// Operational admin set once at `init`.
+    /// Operational admin (singleton, `Address`, persistent).
+    /// Set once by `__constructor`; only changed by a two-step handover
+    /// (`propose_admin_transfer` → `accept_admin_transfer`).
+    /// Absent reads panic with `NotInitialized` (#2).
     Admin,
-    /// `true` if the (source, destination) pair is a recognised route.
-    /// Stored as `bool` so callers can query without distinguishing
-    /// "absent" from "false".
+    /// `true` if `(source, destination)` is a recognised route.
+    /// Keyed per-pair; stored as `bool` so callers can query without
+    /// distinguishing "absent" from "false". Defaults to `false`.
     Pair(Symbol, Symbol),
     /// Per-pair fee in basis points (1 bps = 0.01 %). Stored as `u32`
     /// so the on-the-wire shape is fixed; values above `MAX_FEE_BPS`
-    /// are rejected at write time.
+    /// are rejected at write time. Defaults to `0` (free).
     PairFeeBps(Symbol, Symbol),
-    /// Pending admin proposed via `propose_admin_transfer`. Two-step
-    /// handover guards against locking the contract with a bad key.
+    /// Pending admin proposed via `propose_admin_transfer` (singleton,
+    /// `Address`, persistent). Two-step handover guards against locking
+    /// the contract with a bad key. Absent ↔ `None` (no handover queued).
     PendingAdmin,
-    /// `true` when the router is paused. No write entrypoint accepts
-    /// calls until an unpause.
+    /// `true` when the router is paused (singleton, `bool`, persistent).
+    /// All state-changing entrypoints reject calls until an unpause.
+    /// Defaults to `false` (not paused).
     Paused,
-    /// Minimum routable amount per pair (in source units). Compute
-    /// rejects amounts below the floor.
+    /// Minimum routable amount per pair in source units (keyed per-pair,
+    /// `i128`, persistent). `compute_route_fee` rejects amounts below the
+    /// floor. Defaults to `0` (no floor).
     PairMinAmount(Symbol, Symbol),
-    /// Maximum routable amount per pair (in source units). Compute
-    /// rejects amounts above the ceiling.
+    /// Maximum routable amount per pair in source units (keyed per-pair,
+    /// `i128`, persistent). `compute_route_fee` rejects amounts above the
+    /// ceiling. Defaults to `i128::MAX` (no ceiling).
     PairMaxAmount(Symbol, Symbol),
-    /// Reported available liquidity (in source units) per pair.
-    /// Updated by an off-chain oracle via the admin entrypoint.
+    /// Reported available liquidity in source units per pair (keyed
+    /// per-pair, `i128`, persistent). Updated by an off-chain oracle
+    /// (or the admin) via `set_pair_liquidity`; decremented on every
+    /// successful `compute_route_fee`. Default is context-dependent:
+    /// `get_pair_liquidity` returns `0` for absent, while
+    /// `compute_route_fee` treats absent as `i128::MAX` (unbounded).
     PairLiquidity(Symbol, Symbol),
-    /// Address that receives protocol fees on settlement.
+    /// Address that receives protocol fees on settlement (singleton,
+    /// `Address`, persistent). Absent ↔ `None`.
     FeeRecipient,
-    /// Protocol-wide lifetime counter of `compute_route_fee` invocations.
+    /// Protocol-wide lifetime counter of `compute_route_fee` invocations
+    /// (singleton, `u64`, persistent). Incremented with `saturating_add`
+    /// so it is monotonic and never panics. Defaults to `0`.
     TotalRoutesAllTime,
-    /// Ledger timestamp of the most recent `compute_route_fee` for a pair.
+    /// Ledger timestamp of the most recent `compute_route_fee` for a
+    /// pair (keyed per-pair, `u64`, persistent). Used by the cooldown
+    /// rate-limit gate. Absent reads as `None` (`Option`); `get_pair_info`
+    /// flattens it to `0`.
     PairLastRouteAt(Symbol, Symbol),
-    /// Per-pair lifetime counter of `compute_route_fee` invocations.
-    /// Stored as `u64`; incremented with `saturating_add` so it is
-    /// monotonic and never panics on overflow. Absent reads default to 0.
+    /// Per-pair lifetime counter of `compute_route_fee` invocations
+    /// (keyed per-pair, `u64`, persistent). Incremented with
+    /// `saturating_add` so it is monotonic and never panics on overflow.
+    /// Defaults to `0`.
     PairRouteCount(Symbol, Symbol),
-    /// Per-pair cumulative routed volume (sum of `amount` in source
-    /// units). Stored as `i128`; accumulated with `saturating_add` so it
-    /// is monotonic and never panics on overflow. Absent reads default to 0.
+    /// Per-pair cumulative routed volume — sum of `amount` in source
+    /// units (keyed per-pair, `i128`, persistent). Accumulated with
+    /// `saturating_add` so it is monotonic and never panics on overflow.
+    /// Defaults to `0`.
     PairVolume(Symbol, Symbol),
-    /// On-chain storage schema version. Distinct from version().
+    /// On-chain storage schema version (singleton, `u32`, persistent).
+    /// Distinct from `version()`. Defaults to `1` when absent (the
+    /// implicit pre-migration layout). Advanced to `2` by
+    /// `migrate_v1_to_v2`.
     SchemaVersion,
-    /// Governance timelock delay, in seconds. When > 0, a proposed admin
-    /// handover can only be accepted after the delay has elapsed.
-    /// Defaults to 0 (instant) when unset, preserving prior behaviour.
+    /// Governance timelock delay in seconds (singleton, `u64`,
+    /// persistent). When > 0, a proposed admin handover can only be
+    /// accepted after the delay has elapsed. Defaults to `0` (instant)
+    /// when unset, preserving prior behaviour.
     Timelock,
     /// Earliest ledger timestamp at which the currently pending admin
-    /// transfer may be accepted (`propose_admin_transfer` time + delay).
+    /// transfer may be accepted — `propose_admin_transfer` time + delay
+    /// (singleton, `u64`, persistent). Absent ↔ `None` (no handover
+    /// queued).
     PendingAdminEta,
-    /// Non-reentrancy guard used by state-changing route accounting.
+    /// Non-reentrancy guard (singleton, `bool`, persistent). Set to
+    /// `true` before the write/event phase of `compute_route_fee` and
+    /// cleared to `false` on exit. Defaults to `false`.
     ReentrancyLock,
-    /// Per-pair cooldown, in seconds, between route accounting calls.
+    /// Per-pair cooldown in seconds between route accounting calls
+    /// (keyed per-pair, `u64`, persistent). While non-zero,
+    /// `compute_route_fee` rejects a call until at least this many
+    /// seconds have elapsed since `PairLastRouteAt`. Capped at
+    /// `MAX_COOLDOWN_SECS` (30 days). Defaults to `0` (disabled).
     PairCooldown(Symbol, Symbol),
-    /// Optional absolute per-route fee ceiling.
+    /// Optional absolute per-route fee ceiling (singleton, `i128`,
+    /// persistent). When set, the effective fee is `min(bps_fee, cap)`.
+    /// Absent ↔ `None` (only the relative `MAX_FEE_BPS` bound applies).
     MaxFeeAbsolute,
-    /// Scoped liquidity oracle address.
+    /// Scoped liquidity oracle address (singleton, `Address`,
+    /// persistent). The oracle may call `set_pair_liquidity` and
+    /// nothing else — it cannot set fees, pause, rotate admin, or
+    /// upgrade. Absent ↔ `None` (no oracle configured — admin-only
+    /// liquidity feed).
     Oracle,
 }
 

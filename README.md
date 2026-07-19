@@ -6,6 +6,13 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 
 - **StableRouteRouter** — Soroban contract placeholder for routing metadata and route integrity (version, route tags). Production logic will integrate with path payments and liquidity data.
 
+## Documentation
+
+- **[Storage model & DataKey reference](docs/storage.md)** — authoritative
+  reference for every on-chain storage slot: key shape, value type, tier,
+  default-when-absent, reader/writer entrypoints, and TTL classification.
+- **[ABI reference](docs/abi.md)** — generated client-facing interface.
+
 ## Security
 
 See **[`SECURITY.md`](SECURITY.md)** for the router's trust model (single
