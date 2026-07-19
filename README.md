@@ -121,6 +121,16 @@ would otherwise waste storage rent and pollute future pair enumeration.
 the documented defaults instead of reviving stale fee, bounds, or liquidity
 values.
 
+**Note on `unregister_pair` blocking:** one could imagine requiring
+`unregister_pair` to fail while a pair still has live config (fee/bounds/
+liquidity) set, forcing an explicit config-clear step first. This was
+considered for issue #144 and deliberately left out of scope: since
+`unregister_pair` already clears all four config slots itself (see
+above), there is no window where stale config could survive an
+unregister to justify blocking the call. A future issue could revisit
+this if the cleanup behavior ever changes.
+
+
 ## Roles & least privilege
 
 The router separates governance from the high-frequency liquidity feed:
