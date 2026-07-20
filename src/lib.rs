@@ -4411,3 +4411,32 @@ mod test_i153_version_uninitialized {
         assert!(!client.is_paused());
     }
 }
+
+#[cfg(test)]
+mod test_deployment {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn test_constructor_sets_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        assert_eq!(client.get_admin(), Some(admin));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_legacy_init_panics_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+
+        let new_admin = Address::generate(&env);
+        client.init(&new_admin);
+    }
+}
