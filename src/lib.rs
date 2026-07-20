@@ -3243,6 +3243,38 @@ mod test_i16_fee_arithmetic {
         client.compute_route_fee(&s, &d, &1_000i128);
         assert_eq!(client.get_total_routes_all_time(), 2);
     }
+
+    #[test]
+    fn test_quote_route_net_equals_amount_minus_fee_at_zero_fee() {
+        let env = Env::default();
+        let (client, s, d) = setup_pair(&env);
+        // fee_bps defaults to 0 — no set_pair_fee_bps call.
+        let (fee, net) = client.quote_route(&s, &d, &1_000_000i128);
+        assert_eq!(fee, 0);
+        assert_eq!(net, 1_000_000 - fee);
+    }
+
+    #[test]
+    fn test_quote_route_net_equals_amount_minus_fee_at_max_fee_bps() {
+        let env = Env::default();
+        let (client, s, d) = setup_pair(&env);
+        client.set_pair_fee_bps(&s, &d, &MAX_FEE_BPS);
+        let (fee, net) = client.quote_route(&s, &d, &1_000_000i128);
+        assert_eq!(net, 1_000_000 - fee);
+    }
+
+    #[test]
+    fn test_quote_and_compute_agree_across_fee_tiers() {
+        let env = Env::default();
+        let (client, s, d) = setup_pair(&env);
+        for fee_bps in [0u32, 100u32, MAX_FEE_BPS] {
+            client.set_pair_fee_bps(&s, &d, &fee_bps);
+            let (qfee, qnet) = client.quote_route(&s, &d, &1_000_000i128);
+            let cfee = client.compute_route_fee(&s, &d, &1_000_000i128);
+            assert_eq!(qfee, cfee, "fee mismatch at fee_bps={fee_bps}");
+            assert_eq!(qnet, 1_000_000 - qfee, "net mismatch at fee_bps={fee_bps}");
+        }
+    }
 }
 
 /// Issue #17 — schema migration path and `get_schema_version` defaults.
@@ -3335,6 +3367,26 @@ mod test_i18_read_surface {
             info,
             PairInfo {
                 registered: false,
+                fee_bps: 0,
+                min_amount: 0,
+                max_amount: i128::MAX,
+                liquidity: 0,
+                last_route_at: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn test_pair_info_reflects_bare_registration_only() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        let info = client.get_pair_info(&s, &d);
+        assert_eq!(
+            info,
+            PairInfo {
+                registered: true,
                 fee_bps: 0,
                 min_amount: 0,
                 max_amount: i128::MAX,
