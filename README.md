@@ -197,6 +197,26 @@ tiers) and the PR checklist.
 ### Authorization testing
 All admin-gated entrypoints have negative-authorization tests in `test_i19_authorization` (asserting non-admins are rejected) and positive controls (asserting admins can invoke them). When adding a new admin-gated entrypoint, add a corresponding `test_*_requires_admin` case to this module.
 
+### Defaults and net-computation testing (issue #146)
+`get_pair_info` on a never-touched pair returns the documented sentinel
+defaults exactly: `registered: false, fee_bps: 0, min_amount: 0,
+max_amount: i128::MAX, liquidity: 0, last_route_at: 0`
+(`test_pair_info_defaults_for_unconfigured_pair`). A bare-registered pair
+flips only `registered` to `true`, leaving every other field at its
+default (`test_pair_info_reflects_bare_registration_only`).
+
+`quote_route`'s net (`amount - fee`) is asserted exactly at zero fee and
+at the `MAX_FEE_BPS` cap
+(`test_quote_route_net_equals_amount_minus_fee_at_zero_fee`,
+`test_quote_route_net_equals_amount_minus_fee_at_max_fee_bps`), plus a
+quote-vs-compute parity sweep across zero/typical/max fee tiers on one
+pair (`test_quote_and_compute_agree_across_fee_tiers`), all in
+`test_i16_fee_arithmetic`. This complements the existing property tests
+`prop_fee_within_amount` and `prop_quote_matches_compute`, which already
+prove `0 <= fee <= amount` and `fee + net == amount` generally across the
+full `fee_bps` and `amount` ranges — the tests above pin the same
+invariants at fixed, human-readable boundary values named in issue #146.
+
 ## Liquidity consumption model
 
 `compute_route_fee` debits the routed `amount` from the pair's stored
