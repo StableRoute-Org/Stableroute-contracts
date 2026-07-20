@@ -1107,7 +1107,6 @@ impl StableRouteRouter {
     /// those operational-history slots are tracked separately from live pair configuration.
     fn clear_pair_config(env: &Env, source: Symbol, destination: Symbol) {
         let storage = env.storage().persistent();
-        storage.remove(&DataKey::PairFeeBps(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairMinAmount(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairMaxAmount(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairLiquidity(source.clone(), destination.clone()));
@@ -1116,9 +1115,10 @@ impl StableRouteRouter {
 
     /// Unregister a previously-registered pair. Admin-gated and idempotent.
     ///
-    /// Also clears the pair's fee, min amount, max amount, and liquidity config slots so
+    /// Clears the pair's min amount, max amount, and liquidity config slots so
     /// re-registering the same corridor starts from documented defaults instead of reviving
-    /// stale config.
+    /// stale config. The fee is preserved so a previously configured rate survives
+    /// unregister + re-register cycles.
     pub fn unregister_pair(env: Env, source: Symbol, destination: Symbol) {
         Self::require_admin(&env);
         env.storage()
@@ -2350,11 +2350,10 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        assert_eq!(
-            client.get_pair_fee_bps(&src, &dest),
-            0,
-            "unregister_pair clears pair config via clear_pair_config, so the fee reads its 0 default"
-        );
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        assert_eq!(client.get_pair_min_amount(&src, &dest), 0);
+        assert_eq!(client.get_pair_max_amount(&src, &dest), i128::MAX);
+        assert_eq!(client.get_pair_liquidity(&src, &dest), 0);
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2372,6 +2371,9 @@ mod test {
 
         client.set_pair_fee_bps(&src, &dest, &42u32);
         assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        assert_eq!(client.get_pair_min_amount(&src, &dest), 0);
+        assert_eq!(client.get_pair_max_amount(&src, &dest), i128::MAX);
+        assert_eq!(client.get_pair_liquidity(&src, &dest), 0);
     }
 
     /// Documents the current, unchanged behavior: `unregister_pair` alone
