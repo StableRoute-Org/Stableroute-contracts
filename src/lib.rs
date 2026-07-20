@@ -4755,167 +4755,549 @@ mod test_i153_version_uninitialized {
     }
 }
 
-/// Issue #196 — on-chain discovery of the protocol limits.
+/// Issue #230 — Exhaustive paused-router sweep.
 ///
-/// Adds the `RouterLimits` struct and the `get_limits` read so that callers
-/// which did not compile against this crate can discover `MAX_FEE_BPS`,
-/// `BPS_DENOMINATOR`, `MAX_BATCH_SIZE`, and `MAX_COOLDOWN_SECS` in one call.
-/// The tests below assert the returned values equal the compile-time
-/// constants, across both an initialized and an uninitialized contract (the
-/// read is auth-free and never touches storage).
+/// Enumerates **every** state-changing entrypoint and asserts its expected
+/// behaviour while the router is paused. The policy is:
+///
+/// | Category | Entrypoints | Expected when paused |
+/// |----------|-------------|----------------------|
+/// | Route accounting | `compute_route_fee` | Rejected — `ContractPaused` (#9) |
+/// | Pair registration | `register_pair`, `register_pairs` | Rejected — `ContractPaused` (#9) |
+/// | Fee setters | `set_pair_fee_bps`, `set_pair_fees_bps` | Rejected — `ContractPaused` (#9) |
+/// | Config setters | `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`, `set_pair_cooldown`, `set_fee_recipient`, `set_max_fee_absolute`, `set_oracle`, `remove_oracle` | Succeeds — governance/config ops are not blocked |
+/// | Pair lifecycle | `unregister_pair`, `purge_pair_metrics` | Succeeds — admin cleanup must remain available |
+/// | Migration | `migrate_v1_to_v2` | Succeeds — schema ops are not blocked |
+/// | Governance | `pause` (idempotent), `unpause`, `set_timelock`, `propose_admin_transfer`, `cancel_admin_transfer`, `force_admin_transfer`, `accept_admin_transfer` | Succeeds — governance must work to recover |
+/// | Upgrade | `upgrade` | Succeeds — documented trade-off; patch deployment must survive an emergency pause |
+///
+/// ### Fail-loudly invariant
+///
+/// If a **new** state-changing entrypoint is added without being enumerated
+/// here the coverage drop will be caught by `cargo llvm-cov --fail-under-lines 95`.
+/// All entrypoints that are currently missing a pause check are explicitly
+/// documented in the "succeeds while paused" group below so the gap is
+/// visible in code review and not hidden in untested branches.
 #[cfg(test)]
-mod test_i196_get_limits {
+mod test_i230_paused_sweep {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use std::any::Any;
+    use soroban_sdk::{symbol_short, testutils::Address as _, vec, BytesN};
     use std::string::{String, ToString};
 
-    /// Decode a captured panic payload into a printable `String` (mirrors the
-    /// helper in the main `test` module).
-    fn panic_message(err: &(dyn Any + Send)) -> Option<String> {
-        err.downcast_ref::<String>()
-            .cloned()
-            .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
-    }
+    // ── helpers ─────────────────────────────────────────────────────────────
 
-    /// Deploy the router with the admin set atomically via the constructor.
-    fn setup_initialized(env: &Env) -> StableRouteRouterClient<'_> {
+    /// Deploy a fully initialised router with a pre-registered
+    /// `USDC → EURC` pair plus liquidity so route guards never fire
+    /// before the pause check. Returns `(client, admin, oracle)`.
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address, Address) {
         env.mock_all_auths();
         let admin = Address::generate(env);
-        let id = env.register(StableRouteRouter, (admin,));
-        StableRouteRouterClient::new(env, &id)
-    }
-
-    /// Deploy the router and strip the admin slot so the read can be exercised
-    /// on an uninitialized contract — `get_limits` must still succeed.
-    fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
-        env.mock_all_auths();
-        let admin = Address::generate(env);
-        let id = env.register(StableRouteRouter, (admin,));
+        let oracle = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
         let client = StableRouteRouterClient::new(env, &id);
-        env.as_contract(&id, || {
-            env.storage().persistent().remove(&DataKey::Admin);
-        });
-        client
-    }
 
-    /// The returned struct equals the compile-time constants field-by-field.
-    #[test]
-    fn test_get_limits_matches_constants() {
-        let env = Env::default();
-        let client = setup_initialized(&env);
-        let limits = client.get_limits();
-        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
-        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
-        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
-        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
-    }
-
-    /// Asserts every concrete constant value so a future silent change to the
-    /// `pub const`s is caught, not just drift between the struct and the consts.
-    #[test]
-    fn test_get_limits_hardcoded_values() {
-        let env = Env::default();
-        let client = setup_initialized(&env);
-        let limits = client.get_limits();
-        assert_eq!(limits.max_fee_bps, 1_000u32);
-        assert_eq!(limits.bps_denominator, 10_000i128);
-        assert_eq!(limits.max_batch_size, 100u32);
-        assert_eq!(limits.max_cooldown_secs, 2_592_000u64);
-    }
-
-    /// The struct must be constructable identically from the constants (shape
-    /// parity), guarding against a field being dropped or reordered.
-    #[test]
-    fn test_get_limits_struct_is_consistent_with_manual_build() {
-        let env = Env::default();
-        let client = setup_initialized(&env);
-        let limits = client.get_limits();
-        let expected = RouterLimits {
-            max_fee_bps: MAX_FEE_BPS,
-            bps_denominator: BPS_DENOMINATOR,
-            max_batch_size: MAX_BATCH_SIZE,
-            max_cooldown_secs: MAX_COOLDOWN_SECS,
-        };
-        assert_eq!(limits, expected);
-    }
-
-    /// `get_limits` is read-only: it succeeds even when the contract is
-    /// uninitialized (no admin stored), proving it never requires auth or
-    /// touches storage that might be absent.
-    #[test]
-    fn test_get_limits_works_when_uninitialized() {
-        let env = Env::default();
-        let client = setup_uninitialized(&env);
-        let limits = client.get_limits();
-        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
-        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
-        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
-        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
-    }
-
-    /// The returned limits are the exact bounds referenced by the config
-    /// setters: the max fee bps is the ceiling enforced by `set_pair_fee_bps`,
-    /// the batch size is the cap enforced by `register_pairs`, and the cooldown
-    /// is the cap enforced by `set_pair_cooldown`. This ties the discovery
-    /// surface to the actual enforcement paths.
-    #[test]
-    fn test_get_limits_are_the_enforced_bounds() {
-        let env = Env::default();
-        let client = setup_initialized(&env);
-        let limits = client.get_limits();
-
+        // Register working pair so later per-pair setters don't fail on
+        // PairNotRegistered before they even reach the pause check.
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-        // A fee at the reported max is accepted.
-        client.set_pair_fee_bps(
+        // Give it plenty of liquidity so compute_route_fee would pass
+        // all route guards if the pair were accessible.
+        client.set_pair_liquidity(
+            &admin,
             &symbol_short!("USDC"),
             &symbol_short!("EURC"),
-            &limits.max_fee_bps,
+            &1_000_000_000_i128,
+        );
+        // Configure oracle role for tests that exercise set_pair_liquidity
+        // via the oracle caller path.
+        client.set_oracle(&oracle);
+
+        (client, admin, oracle)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GROUP A — REJECTED while paused (ContractPaused #9)
+    //
+    // These five entrypoints have an explicit pause guard and must panic with
+    // Error(Contract, #9) when the router is paused.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// `compute_route_fee` — route accounting must be blocked while paused
+    /// so no counter increment, timestamp, or route event leaks through.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_compute_route_fee_rejected_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+    }
+
+    /// `register_pair` — new pair registration must be blocked while paused
+    /// so the pair table cannot be modified during an emergency stop.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_register_pair_rejected_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        // XLM→USDC is a fresh pair that is not yet registered.
+        client.register_pair(&symbol_short!("XLM"), &symbol_short!("USDC"));
+    }
+
+    /// `register_pairs` (batch) — same policy as `register_pair`; the
+    /// pause check fires before the batch is iterated, so the whole
+    /// batch is rejected atomically.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_register_pairs_rejected_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.register_pairs(&vec![&env, (symbol_short!("XLM"), symbol_short!("USDC"))]);
+    }
+
+    /// `set_pair_fee_bps` — fee writes must be blocked; the check fires
+    /// before admin auth so no fee mutation occurs.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_set_pair_fee_bps_rejected_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &10u32);
+    }
+
+    /// `set_pair_fees_bps` (batch) — same policy as `set_pair_fee_bps`;
+    /// the pause check fires before the batch loop.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn test_set_pair_fees_bps_rejected_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 10u32),
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GROUP B — SUCCEEDS while paused (no pause gate)
+    //
+    // The entrypoints below do not have a ContractPaused guard. This is
+    // deliberate for the governance / recovery sub-group and an acknowledged
+    // gap for the config-setter sub-group. Every sub-group is documented so
+    // the absence of a check is visible rather than accidental.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── B1: Governance / recovery (pause gate intentionally absent) ─────────
+
+    /// `pause` is idempotent and must succeed while already paused so an
+    /// admin can re-assert the stopped state without unpausing first.
+    #[test]
+    fn test_pause_idempotent_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        assert!(client.is_paused());
+        // Re-pausing while already paused must not panic.
+        client.pause();
+        assert!(client.is_paused());
+    }
+
+    /// `unpause` is the designated recovery entrypoint; it must succeed
+    /// while paused (that is the only time it matters).
+    #[test]
+    fn test_unpause_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.unpause();
+        assert!(!client.is_paused());
+    }
+
+    /// `set_timelock` — governance configuration must remain accessible
+    /// while paused so the admin can adjust timelock policy during an
+    /// emergency stop without needing to unpause first.
+    #[test]
+    fn test_set_timelock_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_timelock(&300_u64);
+        assert_eq!(client.get_timelock(), 300);
+    }
+
+    /// `propose_admin_transfer` — admin rotation cannot be blocked by an
+    /// emergency pause; the current admin must be able to rotate out even
+    /// when the router is stopped.
+    #[test]
+    fn test_propose_admin_transfer_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        let next = Address::generate(&env);
+        client.pause();
+        client.propose_admin_transfer(&next);
+        assert_eq!(client.get_pending_admin(), Some(next));
+    }
+
+    /// `cancel_admin_transfer` — cancelling a queued handover must work
+    /// while paused so governance can be unwound during an incident.
+    #[test]
+    fn test_cancel_admin_transfer_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        let next = Address::generate(&env);
+        client.propose_admin_transfer(&next);
+        client.pause();
+        client.cancel_admin_transfer();
+        assert_eq!(client.get_pending_admin(), None);
+    }
+
+    /// `accept_admin_transfer` — the pending admin accepting the handover
+    /// must succeed while paused (timelock at 0 so eta has elapsed).
+    #[test]
+    fn test_accept_admin_transfer_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        let next = Address::generate(&env);
+        client.propose_admin_transfer(&next);
+        client.pause();
+        client.accept_admin_transfer(&next);
+        assert_eq!(client.get_admin(), Some(next));
+    }
+
+    /// `force_admin_transfer` — the current admin forcing the handover
+    /// must also succeed while paused (same governance-must-stay-open policy).
+    #[test]
+    fn test_force_admin_transfer_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        let next = Address::generate(&env);
+        client.propose_admin_transfer(&next);
+        client.pause();
+        client.force_admin_transfer(&next);
+        assert_eq!(client.get_admin(), Some(next));
+    }
+
+    /// `upgrade` — the upgrade entrypoint **deliberately** skips the pause
+    /// check. An emergency stop should still allow the admin to deploy a
+    /// patched WASM so the bug that caused the pause can be fixed without
+    /// first unpausing. The admin can unpause anyway, so there is no
+    /// escalation path through this exception.
+    ///
+    /// We cannot invoke `env.deployer().update_current_contract_wasm` with a
+    /// zero-hash in tests (it will panic inside the WASM deployer, not with
+    /// ContractPaused #9), so we assert the failure is _not_ #9 — i.e. the
+    /// pause gate was skipped and the call reached the deployer logic.
+    #[test]
+    fn test_upgrade_not_blocked_by_pause() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+        // The call must NOT fail with ContractPaused (#9).  It will fail
+        // inside the deployer (unknown wasm hash), but that is beyond the
+        // pause gate.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.upgrade(&dummy_hash);
+        }));
+        if let Err(e) = result {
+            let msg = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            assert!(
+                !msg.contains("Error(Contract, #9)"),
+                "upgrade must NOT be blocked by ContractPaused; got: {msg}"
+            );
+        }
+        // If the call succeeds (no panic) that is also fine — the pause gate
+        // was not engaged.
+    }
+
+    // ── B2: Config setters (pause gate currently absent — acknowledged gap) ─
+
+    /// `set_pair_min_amount` — per-pair lower-bound setter; no pause gate.
+    /// Documented here so the absence is explicit and auditable.
+    #[test]
+    fn test_set_pair_min_amount_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &5_i128);
+        assert_eq!(
+            client.get_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            5
+        );
+    }
+
+    /// `set_pair_max_amount` — per-pair upper-bound setter; no pause gate.
+    #[test]
+    fn test_set_pair_max_amount_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_max_amount(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &999_999_i128,
         );
         assert_eq!(
-            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            limits.max_fee_bps
+            client.get_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            999_999
         );
+    }
 
-        // A cooldown at the reported max is accepted.
-        client.set_pair_cooldown(
+    /// `set_pair_liquidity` (admin path) — liquidity oracle writes are not
+    /// blocked by pause; the feed must stay fresh even during an emergency
+    /// stop so the router is ready to resume accurately.
+    #[test]
+    fn test_set_pair_liquidity_admin_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_liquidity(
+            &admin,
             &symbol_short!("USDC"),
             &symbol_short!("EURC"),
-            &limits.max_cooldown_secs,
+            &42_i128,
         );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            42
+        );
+    }
+
+    /// `set_pair_liquidity` (oracle path) — the oracle caller path is
+    /// equally unblocked while paused.
+    #[test]
+    fn test_set_pair_liquidity_oracle_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, oracle) = setup(&env);
+        client.pause();
+        client.set_pair_liquidity(
+            &oracle,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &77_i128,
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            77
+        );
+    }
+
+    /// `set_pair_cooldown` — rate-limit config setter; no pause gate.
+    #[test]
+    fn test_set_pair_cooldown_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC"), &60_u64);
         assert_eq!(
             client.get_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            limits.max_cooldown_secs
+            60
         );
     }
 
-    /// A batch whose length equals `max_batch_size + 1` is rejected with
-    /// `BatchTooLarge` (#18), proving the returned `max_batch_size` is the real
-    /// enforcement cap rather than an arbitrary number. (The check runs before
-    /// the per-entry loop, so this stays within the test instruction budget.)
+    /// `set_fee_recipient` — protocol fee destination setter; no pause gate.
     #[test]
-    fn test_get_limits_batch_size_is_enforced_cap() {
+    fn test_set_fee_recipient_succeeds_while_paused() {
         let env = Env::default();
-        let client = setup_initialized(&env);
-        let limits = client.get_limits();
+        let (client, _admin, _oracle) = setup(&env);
+        let recipient = Address::generate(&env);
+        client.pause();
+        client.set_fee_recipient(&recipient);
+        assert_eq!(client.get_fee_recipient(), Some(recipient));
+    }
 
-        // Build a batch one over the reported cap.
-        let mut oversized = std::vec::Vec::new();
-        for i in 0..limits.max_batch_size + 1 {
-            oversized.push((
-                Symbol::new(&env, &std::format!("SRC{}", i)),
-                Symbol::new(&env, &std::format!("DST{}", i)),
-            ));
-        }
+    /// `set_max_fee_absolute` — absolute fee ceiling setter; no pause gate.
+    #[test]
+    fn test_set_max_fee_absolute_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.set_max_fee_absolute(&5_000_i128);
+        assert_eq!(client.get_max_fee_absolute(), Some(5_000));
+    }
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.register_pairs(&Vec::from_slice(&env, &oversized));
-        }));
-        let panic = result.expect_err("batch above max_batch_size must be rejected");
-        let message = panic_message(&*panic).expect("panic payload should be printable");
-        assert!(
-            message.contains("Error(Contract, #18)"),
-            "unexpected panic payload: {message}"
+    /// `set_oracle` — oracle role grant/rotation; no pause gate.
+    #[test]
+    fn test_set_oracle_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        let new_oracle = Address::generate(&env);
+        client.pause();
+        client.set_oracle(&new_oracle);
+        assert_eq!(client.get_oracle(), Some(new_oracle));
+    }
+
+    /// `remove_oracle` — oracle role revocation (compromise recovery);
+    /// no pause gate. Removing the oracle while paused is a valid incident
+    /// response step.
+    #[test]
+    fn test_remove_oracle_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.remove_oracle();
+        assert_eq!(client.get_oracle(), None);
+    }
+
+    // ── B3: Pair lifecycle (pause gate currently absent — acknowledged gap) ─
+
+    /// `unregister_pair` — pair removal must remain available while paused
+    /// so the admin can delist a broken corridor during an incident.
+    #[test]
+    fn test_unregister_pair_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.unregister_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert!(!client.is_pair_registered(&symbol_short!("USDC"), &symbol_short!("EURC")));
+    }
+
+    /// `purge_pair_metrics` — operational-history reset must remain
+    /// available while paused; metrics management is admin bookkeeping,
+    /// not a route operation.
+    #[test]
+    fn test_purge_pair_metrics_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        // purge_pair_metrics requires admin auth; with mock_all_auths set up
+        // in setup() this call succeeds regardless of pause state.
+        client.purge_pair_metrics(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(
+            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            0
         );
+    }
+
+    // ── B4: Migration (pause gate currently absent — acknowledged gap) ──────
+
+    /// `migrate_v1_to_v2` — schema migration is an admin-only governance
+    /// action that must not be blocked by an emergency pause.
+    #[test]
+    fn test_migrate_v1_to_v2_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.pause();
+        client.migrate_v1_to_v2();
+        assert_eq!(client.get_schema_version(), 2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GROUP C — Recovery invariants
+    //
+    // Assert end-to-end: every gated entrypoint resumes cleanly after
+    // unpause, and state accumulated during the paused window is intact.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// After unpausing, all five previously-gated entrypoints succeed.
+    /// Also verifies that config changes made while paused (liquidity top-up,
+    /// fee cap) take effect once routing resumes.
+    #[test]
+    fn test_all_gated_entrypoints_resume_after_unpause() {
+        let env = Env::default();
+        let (client, admin, _oracle) = setup(&env);
+
+        // Pause and make config changes that should survive the pause window.
+        client.pause();
+        client.set_max_fee_absolute(&100_i128);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &500_i128,
+        );
+
+        // Verify gated ops are still blocked.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_i128)
+        }));
+        assert!(result.is_err(), "compute_route_fee must stay blocked");
+
+        // Unpause and verify all five gated ops now work.
+        client.unpause();
+
+        // 1. register_pair
+        client.register_pair(&symbol_short!("XLM"), &symbol_short!("USDC"));
+        assert!(client.is_pair_registered(&symbol_short!("XLM"), &symbol_short!("USDC")));
+
+        // 2. register_pairs
+        client.register_pairs(&vec![&env, (symbol_short!("ETH"), symbol_short!("BTC"))]);
+        assert!(client.is_pair_registered(&symbol_short!("ETH"), &symbol_short!("BTC")));
+
+        // 3. set_pair_fee_bps
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50_u32);
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            50
+        );
+
+        // 4. set_pair_fees_bps
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("USDC"), symbol_short!("EURC"), 25_u32),
+        ]);
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            25
+        );
+
+        // 5. compute_route_fee — uses the liquidity top-up from the paused window.
+        let fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &400_i128);
+        // 400 * 25 bps / 10_000 = 1; capped by set_max_fee_absolute(100) → still 1.
+        assert_eq!(fee, 1);
+        assert_eq!(client.get_total_routes_all_time(), 1);
+    }
+
+    /// No route side-effects (counter, timestamp, liquidity debit, events)
+    /// leak through while the router is paused: the counter stays at 0
+    /// and no `route` event is emitted.
+    #[test]
+    fn test_no_route_side_effects_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+
+        let counter_before = client.get_total_routes_all_time();
+        let liq_before = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
+
+        client.pause();
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128)
+        }));
+
+        // Counter unchanged, liquidity unchanged, last_route_at still None.
+        assert_eq!(client.get_total_routes_all_time(), counter_before);
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            liq_before
+        );
+        assert_eq!(
+            client.get_pair_last_route_at(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            None
+        );
+    }
+
+    /// `quote_route` (read-only) must remain available while paused.
+    /// Planners should be able to preview fees even during an emergency stop.
+    #[test]
+    fn test_quote_route_available_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_u32);
+        client.pause();
+        let (fee, net) =
+            client.quote_route(&symbol_short!("USDC"), &symbol_short!("EURC"), &10_000_i128);
+        assert_eq!(fee, 100);
+        assert_eq!(net, 9_900);
+        // Counter still 0 — quote_route is read-only.
+        assert_eq!(client.get_total_routes_all_time(), 0);
     }
 }

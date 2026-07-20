@@ -261,6 +261,23 @@ tiers) and the PR checklist.
 ### Authorization testing
 All admin-gated entrypoints have negative-authorization tests in `test_i19_authorization` (asserting non-admins are rejected) and positive controls (asserting admins can invoke them). When adding a new admin-gated entrypoint, add a corresponding `test_*_requires_admin` case to this module.
 
+### Pause coverage
+
+`test_i230_paused_sweep` is the **exhaustive pause sweep**: it enumerates every state-changing entrypoint and asserts its expected behaviour while the router is paused. The module documents three categories:
+
+| Category | Entrypoints | Expected when paused |
+|----------|-------------|----------------------|
+| Route accounting | `compute_route_fee` | Rejected — `ContractPaused` (#9) |
+| Pair registration | `register_pair`, `register_pairs` | Rejected — `ContractPaused` (#9) |
+| Fee setters | `set_pair_fee_bps`, `set_pair_fees_bps` | Rejected — `ContractPaused` (#9) |
+| Config setters | `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`, `set_pair_cooldown`, `set_fee_recipient`, `set_max_fee_absolute`, `set_oracle`, `remove_oracle` | Succeeds — governance/config ops are not blocked |
+| Pair lifecycle | `unregister_pair`, `purge_pair_metrics` | Succeeds — admin cleanup must remain available |
+| Migration | `migrate_v1_to_v2` | Succeeds — schema ops are not blocked |
+| Governance | `pause` (idempotent), `unpause`, `set_timelock`, `propose_admin_transfer`, `cancel_admin_transfer`, `force_admin_transfer`, `accept_admin_transfer` | Succeeds — governance must work to recover |
+| Upgrade | `upgrade` | Succeeds — documented trade-off; patch deployment must survive an emergency pause |
+
+The **fail-loudly invariant**: if a new state-changing entrypoint is added without being added to this module, the coverage drop is caught by `cargo llvm-cov --fail-under-lines 95`. When adding a new entrypoint, add a corresponding case to `test_i230_paused_sweep` that documents its pause policy explicitly.
+
 ## Liquidity consumption model
 
 `compute_route_fee` debits the routed `amount` from the pair's stored
