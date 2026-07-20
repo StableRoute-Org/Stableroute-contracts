@@ -350,6 +350,70 @@ impl StableRouteRouter {
             .set(&DataKey::ReentrancyLock, &false);
     }
 
+    /// Read the per-pair fee in basis points from persistent storage.
+    ///
+    /// Returns `0` (free) when the slot is absent — the documented
+    /// default for an unconfigured, registered pair. This is the single
+    /// source of truth for the [`DataKey::PairFeeBps`] sentinel value.
+    fn read_pair_fee_bps(env: &Env, source: &Symbol, destination: &Symbol) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairFeeBps(source.clone(), destination.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Read the per-pair minimum routable amount from persistent storage.
+    ///
+    /// Returns `0` (no floor) when the slot is absent — the documented
+    /// default. This is the single source of truth for the
+    /// [`DataKey::PairMinAmount`] sentinel value.
+    fn read_pair_min(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Read the per-pair maximum routable amount from persistent storage.
+    ///
+    /// Returns `i128::MAX` (no ceiling — unbounded) when the slot is
+    /// absent. This is the single source of truth for the
+    /// [`DataKey::PairMaxAmount`] sentinel value.
+    fn read_pair_max(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
+            .unwrap_or(i128::MAX)
+    }
+
+    /// Read the per-pair reported liquidity from persistent storage.
+    ///
+    /// Returns `0` (no liquidity configured) when the slot is absent —
+    /// the documented default for getters and aggregate reads. Note that
+    /// [`Self::compute_route_fee`] intentionally uses `i128::MAX` as its
+    /// own unbounded sentinel (a context-dependent default, documented
+    /// in the [`DataKey::PairLiquidity`] variant and `storage.md`).
+    /// Callers needing the unbounded semantic should read the slot
+    /// directly with `unwrap_or(i128::MAX)`.
+    fn read_pair_liquidity(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Read the per-pair route cooldown from persistent storage.
+    ///
+    /// Returns `0` (rate limit disabled) when the slot is absent — the
+    /// documented default for an unconfigured pair. This is the single
+    /// source of truth for the [`DataKey::PairCooldown`] sentinel value.
+    fn read_pair_cooldown(env: &Env, source: &Symbol, destination: &Symbol) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
+            .unwrap_or(0)
+    }
+
     /// Returns the router contract version.
     pub fn version(_env: Env) -> Symbol {
         symbol_short!("ROUTER_V2")
@@ -667,9 +731,7 @@ impl StableRouteRouter {
         {
             return false;
         }
-        s.get::<_, i128>(&DataKey::PairLiquidity(source, destination))
-            .unwrap_or(0)
-            > 0
+        Self::read_pair_liquidity(&env, &source, &destination) > 0
     }
 
     /// Single round-trip aggregate read for the dashboard. Returns
@@ -680,18 +742,10 @@ impl StableRouteRouter {
             registered: s
                 .get(&DataKey::Pair(source.clone(), destination.clone()))
                 .unwrap_or(false),
-            fee_bps: s
-                .get(&DataKey::PairFeeBps(source.clone(), destination.clone()))
-                .unwrap_or(0),
-            min_amount: s
-                .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
-                .unwrap_or(0),
-            max_amount: s
-                .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
-                .unwrap_or(i128::MAX),
-            liquidity: s
-                .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
-                .unwrap_or(0),
+            fee_bps: Self::read_pair_fee_bps(&env, &source, &destination),
+            min_amount: Self::read_pair_min(&env, &source, &destination),
+            max_amount: Self::read_pair_max(&env, &source, &destination),
+            liquidity: Self::read_pair_liquidity(&env, &source, &destination),
             last_route_at: s
                 .get(&DataKey::PairLastRouteAt(source, destination))
                 .unwrap_or(0),
@@ -711,27 +765,17 @@ impl StableRouteRouter {
             registered: s
                 .get(&DataKey::Pair(source.clone(), destination.clone()))
                 .unwrap_or(false),
-            fee_bps: s
-                .get(&DataKey::PairFeeBps(source.clone(), destination.clone()))
-                .unwrap_or(0),
-            min_amount: s
-                .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
-                .unwrap_or(0),
-            max_amount: s
-                .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
-                .unwrap_or(i128::MAX),
-            liquidity: s
-                .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
-                .unwrap_or(0),
+            fee_bps: Self::read_pair_fee_bps(&env, &source, &destination),
+            min_amount: Self::read_pair_min(&env, &source, &destination),
+            max_amount: Self::read_pair_max(&env, &source, &destination),
+            liquidity: Self::read_pair_liquidity(&env, &source, &destination),
             last_route_at: s
                 .get(&DataKey::PairLastRouteAt(
                     source.clone(),
                     destination.clone(),
                 ))
                 .unwrap_or(0),
-            cooldown_secs: s
-                .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
-                .unwrap_or(0),
+            cooldown_secs: Self::read_pair_cooldown(&env, &source, &destination),
             route_count: s
                 .get(&DataKey::PairRouteCount(
                     source.clone(),
@@ -763,11 +807,7 @@ impl StableRouteRouter {
         {
             panic_with_error!(&env, RouterError::PairNotRegistered);
         }
-        let fee_bps: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairFeeBps(source, destination))
-            .unwrap_or(0);
+        let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
         let fee = amount
             .checked_mul(fee_bps as i128)
             .map(|n| n / BPS_DENOMINATOR)
@@ -812,10 +852,7 @@ impl StableRouteRouter {
     /// Read the per-pair route cooldown in seconds (0 when absent,
     /// meaning the rate limit is disabled for the pair).
     pub fn get_pair_cooldown(env: Env, source: Symbol, destination: Symbol) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairCooldown(source, destination))
-            .unwrap_or(0)
+        Self::read_pair_cooldown(&env, &source, &destination)
     }
 
     /// Read the protocol-wide lifetime counter of route quotes.
@@ -931,10 +968,7 @@ impl StableRouteRouter {
 
     /// Read the reported liquidity for a pair (0 when absent).
     pub fn get_pair_liquidity(env: Env, source: Symbol, destination: Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairLiquidity(source, destination))
-            .unwrap_or(0)
+        Self::read_pair_liquidity(&env, &source, &destination)
     }
 
     /// Read the configured liquidity oracle, if any.
@@ -1025,10 +1059,7 @@ impl StableRouteRouter {
 
     /// Read the per-pair maximum (i128::MAX when absent).
     pub fn get_pair_max_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairMaxAmount(source, destination))
-            .unwrap_or(i128::MAX)
+        Self::read_pair_max(&env, &source, &destination)
     }
 
     /// Admin sets the per-pair maximum routable amount.
@@ -1050,10 +1081,7 @@ impl StableRouteRouter {
 
     /// Read the per-pair minimum (0 when absent).
     pub fn get_pair_min_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairMinAmount(source, destination))
-            .unwrap_or(0)
+        Self::read_pair_min(&env, &source, &destination)
     }
 
     /// Admin sets the per-pair minimum routable amount.
@@ -1216,10 +1244,7 @@ impl StableRouteRouter {
     /// Returns the configured fee in basis points for a pair, or 0 if
     /// no fee has been set (a registered pair with no fee is free).
     pub fn get_pair_fee_bps(env: Env, source: Symbol, destination: Symbol) -> u32 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairFeeBps(source, destination))
-            .unwrap_or(0)
+        Self::read_pair_fee_bps(&env, &source, &destination)
     }
 
     /// Compute the fee in source units for routing `amount` through the
@@ -1285,20 +1310,12 @@ impl StableRouteRouter {
             Self::exit_nonreentrant(&env);
             panic_with_error!(&env, RouterError::PairNotRegistered);
         }
-        let min_amount: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
-            .unwrap_or(0);
+        let min_amount = Self::read_pair_min(&env, &source, &destination);
         if amount < min_amount {
             Self::exit_nonreentrant(&env);
             panic_with_error!(&env, RouterError::AmountBelowMin);
         }
-        let max_amount: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
-            .unwrap_or(i128::MAX);
+        let max_amount = Self::read_pair_max(&env, &source, &destination);
         if amount > max_amount {
             Self::exit_nonreentrant(&env);
             panic_with_error!(&env, RouterError::AmountAboveMax);
@@ -1324,11 +1341,7 @@ impl StableRouteRouter {
         // (seconds since epoch) that would need to be within 30 days of
         // `u64::MAX` — many orders of magnitude beyond any plausible
         // ledger closing time — before this addition could wrap.
-        let cooldown: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
-            .unwrap_or(0);
+        let cooldown = Self::read_pair_cooldown(&env, &source, &destination);
         if cooldown > 0 {
             if let Some(last) = env
                 .storage()
@@ -1397,11 +1410,7 @@ impl StableRouteRouter {
             (symbol_short!("route"),),
             (source.clone(), destination.clone(), amount),
         );
-        let fee_bps: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairFeeBps(source, destination))
-            .unwrap_or(0);
+        let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
         // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
         // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
         // multiplication is bounded.
@@ -3523,6 +3532,90 @@ mod test_i18_read_surface {
         assert_eq!(ext.cooldown_secs, client.get_pair_cooldown(&s, &d));
         assert_eq!(ext.route_count, client.get_pair_route_count(&s, &d));
         assert_eq!(ext.volume, client.get_pair_volume(&s, &d));
+    }
+
+    /// Sentinel semantics: `i128::MAX` means "unbounded" for
+    /// [`DataKey::PairMaxAmount`] and for liquidity inside
+    /// `compute_route_fee`. When absent, the max-amount ceiling is
+    /// effectively `i128::MAX` (no ceiling), so any amount passes the
+    /// upper bound check, and the liquidity guard treats an unset
+    /// `PairLiquidity` as unbounded — any amount can pass through.
+    ///
+    /// This test verifies that `read_pair_max` returns `i128::MAX` when
+    /// absent, and that `compute_route_fee` accepts a near-max amount
+    /// through an unconfigured registered pair (implicitly proving the
+    /// `i128::MAX` sentinel acts as unbounded for both the max guard and
+    /// the liquidity guard). It also asserts that once explicit finite
+    /// liquidity is configured the [`RouterError::InsufficientLiquidity`]
+    /// guard does fire, distinguishing the "unbounded" sentinel from
+    /// genuine finite liquidity.
+    #[test]
+    fn test_i128_max_sentinel_means_unbounded() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+
+        // 1) Read helpers return the documented sentinels when absent.
+        assert_eq!(
+            client.get_pair_max_amount(&s, &d),
+            i128::MAX,
+            "absent PairMaxAmount must default to i128::MAX (unbounded)"
+        );
+        assert_eq!(
+            client.get_pair_min_amount(&s, &d),
+            0,
+            "absent PairMinAmount must default to 0 (no floor)"
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&s, &d),
+            0,
+            "absent PairLiquidity must default to 0 (no configured liquidity)"
+        );
+        assert_eq!(
+            client.get_pair_fee_bps(&s, &d),
+            0,
+            "absent PairFeeBps must default to 0 (free)"
+        );
+        assert_eq!(
+            client.get_pair_cooldown(&s, &d),
+            0,
+            "absent PairCooldown must default to 0 (disabled)"
+        );
+
+        // 2) Register the pair and prove `i128::MAX` acts as unbounded
+        //    inside `compute_route_fee`.
+        client.register_pair(&s, &d);
+
+        // A route with a very large amount must succeed because both
+        // max_amount (unset → i128::MAX) and liquidity (unset →
+        // i128::MAX inside compute_route_fee) are unbounded.
+        let large = i128::MAX - 1;
+        let fee = client.compute_route_fee(&s, &d, &large);
+        // With 0 bps the fee is zero; what matters is no panic.
+        assert_eq!(fee, 0, "fee must be zero at 0 bps");
+
+        // Route count incremented as side-effect.
+        assert_eq!(client.get_pair_route_count(&s, &d), 1);
+
+        // 3) Set explicit finite liquidity and prove the guard now fires,
+        //    confirming that `i128::MAX` is the only sentinel that
+        //    suppresses the check.
+        client.set_pair_liquidity(&admin, &s, &d, &100i128);
+        assert_eq!(
+            client.get_pair_liquidity(&s, &d),
+            100,
+            "explicitly-set liquidity must be readable"
+        );
+        let result = std::panic::catch_unwind(|| {
+            let _ = client.compute_route_fee(&s, &d, &1_000i128);
+        });
+        let err_msg = panic_message(result.as_ref().err().unwrap());
+        assert!(
+            err_msg
+                .map(|s| s.contains("Error(Contract, #12)"))
+                .unwrap_or(false),
+            "must panic with InsufficientLiquidity (#12) when finite liquidity < amount: got {err_msg:?}"
+        );
     }
 
     #[test]
