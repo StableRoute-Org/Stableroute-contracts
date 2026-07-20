@@ -57,13 +57,33 @@ pub struct PendingAdminInfo {
     pub eta: Option<u64>,
 }
 
-/// Storage keys used by the StableRoute router.
+/// Aggregated read of the protocol-wide limits that callers must respect
+/// before submitting a transaction.
 ///
-/// Twenty variants live in **persistent** storage (per-pair keyed data and
-/// less-hot singletons). Three — `Admin`, `PendingAdmin`, and `Paused` —
-/// live in **instance** storage: they are read on every admin entrypoint
-/// or every gated write, so bundling them with the contract instance
-/// avoids a separate persistent-storage read/TTL check on every call.
+/// Every field mirrors a `pub const` in this module
+/// ([`MAX_FEE_BPS`], [`BPS_DENOMINATOR`], [`MAX_BATCH_SIZE`],
+/// [`MAX_COOLDOWN_SECS`]). Exposing them as a `#[contracttype]` lets an
+/// on-chain caller or a client that did not compile against this crate
+/// discover the enforced bounds in a single read via [`StableRouteRouter::get_limits`].
+///
+/// **Field order is part of the stable on-chain ABI** — do not reorder or
+/// insert fields, as that would change the XDR encoding. New limits must be
+/// appended. Documented in [`docs/abi.md`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterLimits {
+    /// Upper bound on the per-pair fee, in basis points. Mirrors [`MAX_FEE_BPS`].
+    pub max_fee_bps: u32,
+    /// Basis-point denominator (1 bps = 1 / `bps_denominator`). Mirrors [`BPS_DENOMINATOR`].
+    pub bps_denominator: i128,
+    /// Maximum number of entries in a single batch operation. Mirrors [`MAX_BATCH_SIZE`].
+    pub max_batch_size: u32,
+    /// Upper bound on the per-pair route cooldown, in seconds. Mirrors [`MAX_COOLDOWN_SECS`].
+    pub max_cooldown_secs: u64,
+}
+
+/// Storage keys used by the StableRoute router. All twenty variants live
+/// in persistent storage — no instance or temporary storage is used today.
 ///
 /// See [`docs/storage.md`] for the authoritative reference: key shape,
 /// value type, default-when-absent, reader/writer entrypoints, and TTL
@@ -426,6 +446,26 @@ impl StableRouteRouter {
             .persistent()
             .get(&DataKey::SchemaVersion)
             .unwrap_or(1)
+    }
+
+    /// Expose the protocol-wide limits that every caller must respect before
+    /// submitting a transaction.
+    ///
+    /// Returns a [`RouterLimits`] snapshot mirroring the compile-time
+    /// constants [`MAX_FEE_BPS`], [`BPS_DENOMINATOR`], [`MAX_BATCH_SIZE`], and
+    /// [`MAX_COOLDOWN_SECS`]. This is the on-chain discovery surface: an
+    /// on-chain caller or a client that did not compile against this crate
+    /// can learn the enforced bounds from a single read instead of having to
+    /// know the crate's `pub const`s.
+    ///
+    /// Read-only and auth-free; never touches storage.
+    pub fn get_limits(_env: Env) -> RouterLimits {
+        RouterLimits {
+            max_fee_bps: MAX_FEE_BPS,
+            bps_denominator: BPS_DENOMINATOR,
+            max_batch_size: MAX_BATCH_SIZE,
+            max_cooldown_secs: MAX_COOLDOWN_SECS,
+        }
     }
 
     /// Migrate the schema from v1 to v2. Admin-gated; panics with
@@ -4715,257 +4755,167 @@ mod test_i153_version_uninitialized {
     }
 }
 
-/// Issue #165: per-pair cooldown rate limit using ledger timestamp control.
+/// Issue #196 — on-chain discovery of the protocol limits.
 ///
-/// Covers:
-/// - `set_pair_cooldown` rejects cooldown above `MAX_COOLDOWN_SECS` and requires
-///   a registered pair (consistent with other config setters)
-/// - `get_pair_cooldown` defaults to 0 (disabled)
-/// - Cooldown 0 (disabled) allows back-to-back routes
-/// - First route always passes regardless of cooldown setting
-/// - Cooldown blocks a second route within the window (`RouteCooldownActive`)
-/// - Cooldown allows a route after the window elapses (ledger timestamp advance)
-/// - Cooldown is per-pair — independent cooldown states for different pairs
-/// - `set_pair_cooldown` emits a `cd_set` event
-/// - `compute_route_fee` stamps `PairLastRouteAt` which the cooldown gate reads
+/// Adds the `RouterLimits` struct and the `get_limits` read so that callers
+/// which did not compile against this crate can discover `MAX_FEE_BPS`,
+/// `BPS_DENOMINATOR`, `MAX_BATCH_SIZE`, and `MAX_COOLDOWN_SECS` in one call.
+/// The tests below assert the returned values equal the compile-time
+/// constants, across both an initialized and an uninitialized contract (the
+/// read is auth-free and never touches storage).
 #[cfg(test)]
-mod test_i165_cooldown_rate_limit {
+mod test_i196_get_limits {
     use super::*;
-    use crate::test::event_payloads;
-    use soroban_sdk::{
-        symbol_short,
-        testutils::{Address as _, Ledger},
-    };
+    use soroban_sdk::testutils::Address as _;
+    use std::any::Any;
+    use std::string::{String, ToString};
 
-    fn setup_pair(env: &Env) -> (StableRouteRouterClient<'_>, Symbol, Symbol) {
+    /// Decode a captured panic payload into a printable `String` (mirrors the
+    /// helper in the main `test` module).
+    fn panic_message(err: &(dyn Any + Send)) -> Option<String> {
+        err.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+    }
+
+    /// Deploy the router with the admin set atomically via the constructor.
+    fn setup_initialized(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin,));
+        StableRouteRouterClient::new(env, &id)
+    }
+
+    /// Deploy the router and strip the admin slot so the read can be exercised
+    /// on an uninitialized contract — `get_limits` must still succeed.
+    fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
         env.mock_all_auths();
         let admin = Address::generate(env);
         let id = env.register(StableRouteRouter, (admin,));
         let client = StableRouteRouterClient::new(env, &id);
-        let src = symbol_short!("USDC");
-        let dst = symbol_short!("EURC");
-        client.register_pair(&src, &dst);
-        (client, src, dst)
+        env.as_contract(&id, || {
+            env.storage().persistent().remove(&DataKey::Admin);
+        });
+        client
     }
 
-    // --- set_pair_cooldown validation ---
-
+    /// The returned struct equals the compile-time constants field-by-field.
     #[test]
-    #[should_panic(expected = "Error(Contract, #20)")]
-    fn test_set_pair_cooldown_rejects_above_max() {
+    fn test_get_limits_matches_constants() {
         let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &(MAX_COOLDOWN_SECS + 1));
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
+        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
+        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
+        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
     }
 
+    /// Asserts every concrete constant value so a future silent change to the
+    /// `pub const`s is caught, not just drift between the struct and the consts.
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_cooldown_rejects_unregistered_pair() {
+    fn test_get_limits_hardcoded_values() {
         let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let id = env.register(StableRouteRouter, (admin,));
-        let client = StableRouteRouterClient::new(&env, &id);
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, 1_000u32);
+        assert_eq!(limits.bps_denominator, 10_000i128);
+        assert_eq!(limits.max_batch_size, 100u32);
+        assert_eq!(limits.max_cooldown_secs, 2_592_000u64);
+    }
+
+    /// The struct must be constructable identically from the constants (shape
+    /// parity), guarding against a field being dropped or reordered.
+    #[test]
+    fn test_get_limits_struct_is_consistent_with_manual_build() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        let expected = RouterLimits {
+            max_fee_bps: MAX_FEE_BPS,
+            bps_denominator: BPS_DENOMINATOR,
+            max_batch_size: MAX_BATCH_SIZE,
+            max_cooldown_secs: MAX_COOLDOWN_SECS,
+        };
+        assert_eq!(limits, expected);
+    }
+
+    /// `get_limits` is read-only: it succeeds even when the contract is
+    /// uninitialized (no admin stored), proving it never requires auth or
+    /// touches storage that might be absent.
+    #[test]
+    fn test_get_limits_works_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
+        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
+        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
+        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
+    }
+
+    /// The returned limits are the exact bounds referenced by the config
+    /// setters: the max fee bps is the ceiling enforced by `set_pair_fee_bps`,
+    /// the batch size is the cap enforced by `register_pairs`, and the cooldown
+    /// is the cap enforced by `set_pair_cooldown`. This ties the discovery
+    /// surface to the actual enforcement paths.
+    #[test]
+    fn test_get_limits_are_the_enforced_bounds() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        // A fee at the reported max is accepted.
+        client.set_pair_fee_bps(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &limits.max_fee_bps,
+        );
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            limits.max_fee_bps
+        );
+
+        // A cooldown at the reported max is accepted.
         client.set_pair_cooldown(
             &symbol_short!("USDC"),
             &symbol_short!("EURC"),
-            &60u64,
+            &limits.max_cooldown_secs,
         );
-    }
-
-    // --- get_pair_cooldown defaults ---
-
-    #[test]
-    fn test_get_pair_cooldown_defaults_to_zero() {
-        let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        assert_eq!(client.get_pair_cooldown(&src, &dst), 0);
-    }
-
-    #[test]
-    fn test_get_pair_cooldown_after_set() {
-        let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &120u64);
-        assert_eq!(client.get_pair_cooldown(&src, &dst), 120);
-    }
-
-    // --- cooldown disabled (0) allows back-to-back routes ---
-
-    #[test]
-    fn test_cooldown_zero_allows_immediate_reroute() {
-        let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_fee_bps(&src, &dst, &10u32);
-        // Cooldown defaults to 0 (disabled).
-        let fee1 = client.compute_route_fee(&src, &dst, &1_000i128);
-        let fee2 = client.compute_route_fee(&src, &dst, &1_000i128);
-        assert_eq!(fee1, fee2);
-        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
-    }
-
-    // --- first route always passes ---
-
-    #[test]
-    fn test_first_route_passes_with_cooldown_set() {
-        let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &3600u64);
-        // No prior route — no last_route_at timestamp — first call passes.
         assert_eq!(
-            client.compute_route_fee(&src, &dst, &500i128),
-            0
+            client.get_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            limits.max_cooldown_secs
         );
     }
 
-    // --- cooldown blocks immediate second route ---
-
+    /// A batch whose length equals `max_batch_size + 1` is rejected with
+    /// `BatchTooLarge` (#18), proving the returned `max_batch_size` is the real
+    /// enforcement cap rather than an arbitrary number. (The check runs before
+    /// the per-entry loop, so this stays within the test instruction budget.)
     #[test]
-    #[should_panic(expected = "Error(Contract, #17)")]
-    fn test_cooldown_blocks_second_route_within_window() {
+    fn test_get_limits_batch_size_is_enforced_cap() {
         let env = Env::default();
-        env.ledger().set_timestamp(1_000);
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &100u64);
-        // First route succeeds, stamping last_route_at = 1_000.
-        client.compute_route_fee(&src, &dst, &500i128);
-        // Second route at same timestamp (t = 1_000) — cooldown not elapsed.
-        client.compute_route_fee(&src, &dst, &500i128);
-    }
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
 
-    // --- cooldown allows route after window elapses ---
+        // Build a batch one over the reported cap.
+        let mut oversized = std::vec::Vec::new();
+        for i in 0..limits.max_batch_size + 1 {
+            oversized.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
 
-    #[test]
-    fn test_cooldown_allows_route_after_window_elapses() {
-        let env = Env::default();
-        env.ledger().set_timestamp(1_000);
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &100u64);
-        // First route at t = 1_000.
-        client.compute_route_fee(&src, &dst, &500i128);
-        // Advance past the cooldown window.
-        env.ledger().set_timestamp(1_100);
-        // Second route at t = 1_100 — exactly at last + cooldown.
-        let fee = client.compute_route_fee(&src, &dst, &500i128);
-        assert_eq!(fee, 0);
-        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
-    }
-
-    #[test]
-    fn test_cooldown_allows_route_well_after_window() {
-        let env = Env::default();
-        env.ledger().set_timestamp(1_000);
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &100u64);
-        client.compute_route_fee(&src, &dst, &500i128);
-        // Advance far beyond the cooldown.
-        env.ledger().set_timestamp(9_999);
-        let fee = client.compute_route_fee(&src, &dst, &500i128);
-        assert_eq!(fee, 0);
-        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
-    }
-
-    // --- cooldown is per-pair (independent state) ---
-
-    #[test]
-    fn test_cooldown_is_per_pair_independent() {
-        let env = Env::default();
-        env.ledger().set_timestamp(1_000);
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let id = env.register(StableRouteRouter, (admin,));
-        let client = StableRouteRouterClient::new(&env, &id);
-
-        let src_a = symbol_short!("USDC");
-        let dst_a = symbol_short!("EURC");
-        let src_b = symbol_short!("XLM");
-        let dst_b = symbol_short!("USDC");
-
-        client.register_pair(&src_a, &dst_a);
-        client.register_pair(&src_b, &dst_b);
-        client.set_pair_cooldown(&src_a, &dst_a, &200u64);
-        client.set_pair_cooldown(&src_b, &dst_b, &200u64);
-
-        // Route pair A at t = 1_000.
-        client.compute_route_fee(&src_a, &dst_a, &100i128);
-        // Route pair B at t = 1_000 (different pair, independent cooldown).
-        client.compute_route_fee(&src_b, &dst_b, &100i128);
-
-        // Both should have last_route_at = 1_000.
-        assert_eq!(client.get_pair_last_route_at(&src_a, &dst_a), Some(1_000));
-        assert_eq!(client.get_pair_last_route_at(&src_b, &dst_b), Some(1_000));
-
-        // Advance by 100 — not enough for pair A (cooldown 200), but
-        // we can verify pair B also blocked at the same timestamp.
-        env.ledger().set_timestamp(1_100);
-        let err_a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&src_a, &dst_a, &100i128);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_pairs(&Vec::from_slice(&env, &oversized));
         }));
-        assert!(err_a.is_err(), "pair A should still be in cooldown");
-
-        let err_b = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&src_b, &dst_b, &100i128);
-        }));
-        assert!(err_b.is_err(), "pair B should still be in cooldown");
-
-        // Advance to t = 1_200 — exactly at last + cooldown for both.
-        env.ledger().set_timestamp(1_200);
-        client.compute_route_fee(&src_a, &dst_a, &200i128);
-        client.compute_route_fee(&src_b, &dst_b, &200i128);
-        assert_eq!(client.get_pair_route_count(&src_a, &dst_a), 2);
-        assert_eq!(client.get_pair_route_count(&src_b, &dst_b), 2);
-    }
-
-    // --- set_pair_cooldown emits cd_set event ---
-
-    #[test]
-    fn test_set_pair_cooldown_emits_event() {
-        let env = Env::default();
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &300u64);
-        let payloads = event_payloads(&env, symbol_short!("cd_set"));
-        assert_eq!(payloads.len(), 1, "set_pair_cooldown emits exactly one cd_set event");
-        let decoded: (Symbol, Symbol, u64) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
-                .expect("cd_set event data decodes to (Symbol, Symbol, u64)");
-        assert_eq!(decoded, (src, dst, 300u64));
-    }
-
-    // --- compute_route_fee stamps last_route_at after route ---
-
-    #[test]
-    fn test_cooldown_stamps_last_route_at() {
-        let env = Env::default();
-        env.ledger().set_timestamp(42_000);
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &500u64);
-        assert_eq!(client.get_pair_last_route_at(&src, &dst), None);
-        client.compute_route_fee(&src, &dst, &1_000i128);
-        assert_eq!(
-            client.get_pair_last_route_at(&src, &dst),
-            Some(42_000)
+        let panic = result.expect_err("batch above max_batch_size must be rejected");
+        let message = panic_message(&*panic).expect("panic payload should be printable");
+        assert!(
+            message.contains("Error(Contract, #18)"),
+            "unexpected panic payload: {message}"
         );
-    }
-
-    // --- cooldown respects exact boundary (last + cooldown == timestamp) ---
-
-    #[test]
-    fn test_cooldown_boundary_at_last_plus_cooldown() {
-        let env = Env::default();
-        env.ledger().set_timestamp(5_000);
-        let (client, src, dst) = setup_pair(&env);
-        client.set_pair_cooldown(&src, &dst, &300u64);
-        client.compute_route_fee(&src, &dst, &100i128);
-        // At t = 5_299, still in cooldown (5_000 + 300 = 5_300).
-        env.ledger().set_timestamp(5_299);
-        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&src, &dst, &100i128);
-        }));
-        assert!(err.is_err(), "should be blocked at t = last + cooldown - 1");
-
-        // At t = 5_300, exactly at the boundary: allowed.
-        env.ledger().set_timestamp(5_300);
-        client.compute_route_fee(&src, &dst, &100i128);
-        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
     }
 }

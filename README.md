@@ -6,6 +6,24 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 
 - **StableRouteRouter** — Soroban contract placeholder for routing metadata and route integrity (version, route tags). Production logic will integrate with path payments and liquidity data.
 
+## Protocol limits
+
+The router enforces compile-time bounds that callers must respect before
+submitting a transaction. Discover them on-chain via the auth-free, read-only
+`get_limits` entrypoint, which returns a `RouterLimits` struct mirroring the
+constants below:
+
+| Limit | Constant | Value | Enforced by |
+|-------|----------|-------|-------------|
+| Max per-pair fee | `MAX_FEE_BPS` | `1_000` bps (10%) | `set_pair_fee_bps`, `set_pair_fees_bps` |
+| BPS denominator | `BPS_DENOMINATOR` | `10_000` | fee arithmetic |
+| Max batch size | `MAX_BATCH_SIZE` | `100` entries | `register_pairs`, `set_pair_fees_bps` |
+| Max cooldown | `MAX_COOLDOWN_SECS` | `2_592_000` s (30 days) | `set_pair_cooldown` |
+
+The `RouterLimits` field order is a stable part of the on-chain ABI — do not
+reorder or insert fields. See [`docs/abi.md`](docs/abi.md) for the authoritative
+reference.
+
 ## Documentation
 
 - **[Storage model & DataKey reference](docs/storage.md)** — authoritative
