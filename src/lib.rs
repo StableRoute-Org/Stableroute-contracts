@@ -57,6 +57,31 @@ pub struct PendingAdminInfo {
     pub eta: Option<u64>,
 }
 
+/// Aggregated read of the protocol-wide limits that callers must respect
+/// before submitting a transaction.
+///
+/// Every field mirrors a `pub const` in this module
+/// ([`MAX_FEE_BPS`], [`BPS_DENOMINATOR`], [`MAX_BATCH_SIZE`],
+/// [`MAX_COOLDOWN_SECS`]). Exposing them as a `#[contracttype]` lets an
+/// on-chain caller or a client that did not compile against this crate
+/// discover the enforced bounds in a single read via [`StableRouteRouter::get_limits`].
+///
+/// **Field order is part of the stable on-chain ABI** — do not reorder or
+/// insert fields, as that would change the XDR encoding. New limits must be
+/// appended. Documented in [`docs/abi.md`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterLimits {
+    /// Upper bound on the per-pair fee, in basis points. Mirrors [`MAX_FEE_BPS`].
+    pub max_fee_bps: u32,
+    /// Basis-point denominator (1 bps = 1 / `bps_denominator`). Mirrors [`BPS_DENOMINATOR`].
+    pub bps_denominator: i128,
+    /// Maximum number of entries in a single batch operation. Mirrors [`MAX_BATCH_SIZE`].
+    pub max_batch_size: u32,
+    /// Upper bound on the per-pair route cooldown, in seconds. Mirrors [`MAX_COOLDOWN_SECS`].
+    pub max_cooldown_secs: u64,
+}
+
 /// Storage keys used by the StableRoute router. All twenty variants live
 /// in persistent storage — no instance or temporary storage is used today.
 ///
@@ -328,6 +353,26 @@ impl StableRouteRouter {
             .persistent()
             .get(&DataKey::SchemaVersion)
             .unwrap_or(1)
+    }
+
+    /// Expose the protocol-wide limits that every caller must respect before
+    /// submitting a transaction.
+    ///
+    /// Returns a [`RouterLimits`] snapshot mirroring the compile-time
+    /// constants [`MAX_FEE_BPS`], [`BPS_DENOMINATOR`], [`MAX_BATCH_SIZE`], and
+    /// [`MAX_COOLDOWN_SECS`]. This is the on-chain discovery surface: an
+    /// on-chain caller or a client that did not compile against this crate
+    /// can learn the enforced bounds from a single read instead of having to
+    /// know the crate's `pub const`s.
+    ///
+    /// Read-only and auth-free; never touches storage.
+    pub fn get_limits(_env: Env) -> RouterLimits {
+        RouterLimits {
+            max_fee_bps: MAX_FEE_BPS,
+            bps_denominator: BPS_DENOMINATOR,
+            max_batch_size: MAX_BATCH_SIZE,
+            max_cooldown_secs: MAX_COOLDOWN_SECS,
+        }
     }
 
     /// Migrate the schema from v1 to v2. Admin-gated; panics with
@@ -4366,5 +4411,170 @@ mod test_i153_version_uninitialized {
         assert!(client.is_paused());
         client.unpause();
         assert!(!client.is_paused());
+    }
+}
+
+/// Issue #196 — on-chain discovery of the protocol limits.
+///
+/// Adds the `RouterLimits` struct and the `get_limits` read so that callers
+/// which did not compile against this crate can discover `MAX_FEE_BPS`,
+/// `BPS_DENOMINATOR`, `MAX_BATCH_SIZE`, and `MAX_COOLDOWN_SECS` in one call.
+/// The tests below assert the returned values equal the compile-time
+/// constants, across both an initialized and an uninitialized contract (the
+/// read is auth-free and never touches storage).
+#[cfg(test)]
+mod test_i196_get_limits {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use std::any::Any;
+    use std::string::{String, ToString};
+
+    /// Decode a captured panic payload into a printable `String` (mirrors the
+    /// helper in the main `test` module).
+    fn panic_message(err: &(dyn Any + Send)) -> Option<String> {
+        err.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+    }
+
+    /// Deploy the router with the admin set atomically via the constructor.
+    fn setup_initialized(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin,));
+        StableRouteRouterClient::new(env, &id)
+    }
+
+    /// Deploy the router and strip the admin slot so the read can be exercised
+    /// on an uninitialized contract — `get_limits` must still succeed.
+    fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(env, &id);
+        env.as_contract(&id, || {
+            env.storage().persistent().remove(&DataKey::Admin);
+        });
+        client
+    }
+
+    /// The returned struct equals the compile-time constants field-by-field.
+    #[test]
+    fn test_get_limits_matches_constants() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
+        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
+        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
+        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
+    }
+
+    /// Asserts every concrete constant value so a future silent change to the
+    /// `pub const`s is caught, not just drift between the struct and the consts.
+    #[test]
+    fn test_get_limits_hardcoded_values() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, 1_000u32);
+        assert_eq!(limits.bps_denominator, 10_000i128);
+        assert_eq!(limits.max_batch_size, 100u32);
+        assert_eq!(limits.max_cooldown_secs, 2_592_000u64);
+    }
+
+    /// The struct must be constructable identically from the constants (shape
+    /// parity), guarding against a field being dropped or reordered.
+    #[test]
+    fn test_get_limits_struct_is_consistent_with_manual_build() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+        let expected = RouterLimits {
+            max_fee_bps: MAX_FEE_BPS,
+            bps_denominator: BPS_DENOMINATOR,
+            max_batch_size: MAX_BATCH_SIZE,
+            max_cooldown_secs: MAX_COOLDOWN_SECS,
+        };
+        assert_eq!(limits, expected);
+    }
+
+    /// `get_limits` is read-only: it succeeds even when the contract is
+    /// uninitialized (no admin stored), proving it never requires auth or
+    /// touches storage that might be absent.
+    #[test]
+    fn test_get_limits_works_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let limits = client.get_limits();
+        assert_eq!(limits.max_fee_bps, MAX_FEE_BPS);
+        assert_eq!(limits.bps_denominator, BPS_DENOMINATOR);
+        assert_eq!(limits.max_batch_size, MAX_BATCH_SIZE);
+        assert_eq!(limits.max_cooldown_secs, MAX_COOLDOWN_SECS);
+    }
+
+    /// The returned limits are the exact bounds referenced by the config
+    /// setters: the max fee bps is the ceiling enforced by `set_pair_fee_bps`,
+    /// the batch size is the cap enforced by `register_pairs`, and the cooldown
+    /// is the cap enforced by `set_pair_cooldown`. This ties the discovery
+    /// surface to the actual enforcement paths.
+    #[test]
+    fn test_get_limits_are_the_enforced_bounds() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        // A fee at the reported max is accepted.
+        client.set_pair_fee_bps(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &limits.max_fee_bps,
+        );
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            limits.max_fee_bps
+        );
+
+        // A cooldown at the reported max is accepted.
+        client.set_pair_cooldown(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &limits.max_cooldown_secs,
+        );
+        assert_eq!(
+            client.get_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            limits.max_cooldown_secs
+        );
+    }
+
+    /// A batch whose length equals `max_batch_size + 1` is rejected with
+    /// `BatchTooLarge` (#18), proving the returned `max_batch_size` is the real
+    /// enforcement cap rather than an arbitrary number. (The check runs before
+    /// the per-entry loop, so this stays within the test instruction budget.)
+    #[test]
+    fn test_get_limits_batch_size_is_enforced_cap() {
+        let env = Env::default();
+        let client = setup_initialized(&env);
+        let limits = client.get_limits();
+
+        // Build a batch one over the reported cap.
+        let mut oversized = std::vec::Vec::new();
+        for i in 0..limits.max_batch_size + 1 {
+            oversized.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.register_pairs(&Vec::from_slice(&env, &oversized));
+        }));
+        let panic = result.expect_err("batch above max_batch_size must be rejected");
+        let message = panic_message(&*panic).expect("panic payload should be printable");
+        assert!(
+            message.contains("Error(Contract, #18)"),
+            "unexpected panic payload: {message}"
+        );
     }
 }
