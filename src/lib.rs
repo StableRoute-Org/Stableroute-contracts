@@ -488,7 +488,7 @@ impl StableRouteRouter {
             panic_with_error!(&env, RouterError::ContractPaused);
         }
         Self::require_admin(&env);
-        if pairs.len() == 0 {
+        if pairs.is_empty() {
             panic_with_error!(&env, RouterError::EmptyBatch);
         }
         if pairs.len() > MAX_BATCH_SIZE {
@@ -946,7 +946,7 @@ impl StableRouteRouter {
             panic_with_error!(&env, RouterError::ContractPaused);
         }
         Self::require_admin(&env);
-        if entries.len() == 0 {
+        if entries.is_empty() {
             panic_with_error!(&env, RouterError::EmptyBatch);
         }
         if entries.len() > MAX_BATCH_SIZE {
@@ -3062,7 +3062,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_pair_info_reflects_configuration() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
         client.set_pair_fee_bps(&s, &d, &25u32);
@@ -3081,7 +3081,7 @@ mod test_i18_read_surface {
     #[test]
     fn test_is_pair_active_requires_registration_and_liquidity() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
+        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         assert!(!client.is_pair_active(&s, &d));
         client.register_pair(&s, &d);
