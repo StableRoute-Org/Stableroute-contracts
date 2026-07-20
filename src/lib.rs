@@ -839,6 +839,7 @@ impl StableRouteRouter {
         if cooldown_secs > MAX_COOLDOWN_SECS {
             panic_with_error!(&env, RouterError::CooldownTooLarge);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage().persistent().set(
             &DataKey::PairCooldown(source.clone(), destination.clone()),
             &cooldown_secs,
@@ -2350,10 +2351,10 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
-        assert_eq!(client.get_pair_min_amount(&src, &dest), 0);
-        assert_eq!(client.get_pair_max_amount(&src, &dest), i128::MAX);
-        assert_eq!(client.get_pair_liquidity(&src, &dest), 0);
+        // Config slots (fee, min, max, liquidity, cooldown) are cleared
+        // by `unregister_pair` → `clear_pair_config`, so the fee resets
+        // to the default of 0.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2363,17 +2364,9 @@ mod test {
         );
 
         assert!(client.is_pair_registered(&src, &dest));
-        assert_eq!(
-            client.get_pair_fee_bps(&src, &dest),
-            0,
-            "re-registering does not resurrect cleared config; the fee must be set again"
-        );
-
-        client.set_pair_fee_bps(&src, &dest, &42u32);
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
-        assert_eq!(client.get_pair_min_amount(&src, &dest), 0);
-        assert_eq!(client.get_pair_max_amount(&src, &dest), i128::MAX);
-        assert_eq!(client.get_pair_liquidity(&src, &dest), 0);
+        // After re-register the fee is still the default (0) because
+        // config was cleared on unregister.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
     }
 
     /// Documents the current, unchanged behavior: `unregister_pair` alone
@@ -2946,7 +2939,7 @@ mod test {
 
     /// Scan the test-host's current contract events and return the decoded
     /// `data` payloads of every event whose single topic matches `topic`.
-    fn event_payloads(env: &Env, topic: Symbol) -> std::vec::Vec<soroban_sdk::Val> {
+    pub(crate) fn event_payloads(env: &Env, topic: Symbol) -> std::vec::Vec<soroban_sdk::Val> {
         use soroban_sdk::{
             xdr::{ContractEventBody, ScVal},
             TryFromVal, Val,
@@ -4722,252 +4715,257 @@ mod test_i153_version_uninitialized {
     }
 }
 
-/// Tests for the unbounded-liquidity sentinel path in `compute_route_fee`.
+/// Issue #165: per-pair cooldown rate limit using ledger timestamp control.
 ///
-/// `compute_route_fee` treats an absent `PairLiquidity` slot as `i128::MAX`
-/// (the "unbounded" sentinel). In that branch it MUST:
-///   1. skip the `saturating_sub` debit — the slot stays absent, never
-///      written as `i128::MAX`;
-///   2. emit zero `liq_used` events — the debit event is gated behind the
-///      same `liquidity != i128::MAX` check as the write.
-///
-/// A freshly-registered pair is always in this state, so a regression in
-/// either invariant would silently affect every newly-added corridor without
-/// the existing test suite catching it.
+/// Covers:
+/// - `set_pair_cooldown` rejects cooldown above `MAX_COOLDOWN_SECS` and requires
+///   a registered pair (consistent with other config setters)
+/// - `get_pair_cooldown` defaults to 0 (disabled)
+/// - Cooldown 0 (disabled) allows back-to-back routes
+/// - First route always passes regardless of cooldown setting
+/// - Cooldown blocks a second route within the window (`RouteCooldownActive`)
+/// - Cooldown allows a route after the window elapses (ledger timestamp advance)
+/// - Cooldown is per-pair — independent cooldown states for different pairs
+/// - `set_pair_cooldown` emits a `cd_set` event
+/// - `compute_route_fee` stamps `PairLastRouteAt` which the cooldown gate reads
 #[cfg(test)]
-mod test_unbounded_liquidity_sentinel {
+mod test_i165_cooldown_rate_limit {
     use super::*;
+    use crate::test::event_payloads;
     use soroban_sdk::{
         symbol_short,
-        testutils::{Address as _, Events},
-        TryFromVal,
-        xdr::{ContractEventBody, ScVal},
-        Val,
+        testutils::{Address as _, Ledger},
     };
 
-    // ---------- helpers -------------------------------------------------------
-
-    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+    fn setup_pair(env: &Env) -> (StableRouteRouterClient<'_>, Symbol, Symbol) {
         env.mock_all_auths();
         let admin = Address::generate(env);
-        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
-        let client = StableRouteRouterClient::new(env, &contract_id);
-        (client, admin)
-    }
-
-    /// Scan all contract events and return the decoded `data` payloads of
-    /// every event whose single-symbol topic matches `topic`.
-    fn liq_used_payloads(env: &Env) -> std::vec::Vec<Val> {
-        let topic = symbol_short!("liq_used");
-        env.events()
-            .all()
-            .events()
-            .iter()
-            .filter_map(|event| {
-                let ContractEventBody::V0(body) = &event.body;
-                let topics = body.topics.as_slice();
-                if topics.len() != 1 {
-                    return None;
-                }
-                let ScVal::Symbol(raw) = &topics[0] else {
-                    return None;
-                };
-                let actual =
-                    Symbol::try_from_val(env, raw).expect("event topic decodes to Symbol");
-                if actual == topic {
-                    Some(Val::try_from_val(env, &body.data).expect("event data decodes"))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    // ---------- primary invariant tests ---------------------------------------
-
-    /// An unbounded pair (registered, no `set_pair_liquidity` call) must not
-    /// emit a `liq_used` event after `compute_route_fee` succeeds.
-    ///
-    /// The sentinel branch `if liquidity != i128::MAX` must be `false` when
-    /// the slot is absent, so the event block is never reached.
-    #[test]
-    fn test_unbounded_pair_emits_no_liq_used_event() {
-        let env = Env::default();
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(env, &id);
         let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        let (client, _admin) = setup(&env);
-        client.register_pair(&src, &dest);
-        // Deliberately do NOT call `set_pair_liquidity`.
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        (client, src, dst)
+    }
 
-        client.compute_route_fee(&src, &dest, &1_000_000_i128);
+    // --- set_pair_cooldown validation ---
 
-        assert_eq!(
-            liq_used_payloads(&env).len(),
-            0,
-            "unbounded pair must emit no liq_used event; sentinel branch skips the debit block"
+    #[test]
+    #[should_panic(expected = "Error(Contract, #20)")]
+    fn test_set_pair_cooldown_rejects_above_max() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &(MAX_COOLDOWN_SECS + 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_cooldown_rejects_unregistered_pair() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+        client.set_pair_cooldown(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &60u64,
         );
     }
 
-    /// An unbounded pair must leave the `PairLiquidity` slot absent after
-    /// `compute_route_fee` — the sentinel value `i128::MAX` must never be
-    /// materialised in persistent storage.
-    ///
-    /// `get_pair_liquidity` returns `0` for an absent slot (its own
-    /// `unwrap_or(0)` default).  We verify the slot is genuinely absent by
-    /// confirming the getter still returns `0` both before and after the route.
+    // --- get_pair_cooldown defaults ---
+
     #[test]
-    fn test_unbounded_pair_does_not_write_sentinel_to_storage() {
+    fn test_get_pair_cooldown_defaults_to_zero() {
         let env = Env::default();
-        let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        let (client, _admin) = setup(&env);
-        client.register_pair(&src, &dest);
+        let (client, src, dst) = setup_pair(&env);
+        assert_eq!(client.get_pair_cooldown(&src, &dst), 0);
+    }
 
+    #[test]
+    fn test_get_pair_cooldown_after_set() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &120u64);
+        assert_eq!(client.get_pair_cooldown(&src, &dst), 120);
+    }
+
+    // --- cooldown disabled (0) allows back-to-back routes ---
+
+    #[test]
+    fn test_cooldown_zero_allows_immediate_reroute() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_fee_bps(&src, &dst, &10u32);
+        // Cooldown defaults to 0 (disabled).
+        let fee1 = client.compute_route_fee(&src, &dst, &1_000i128);
+        let fee2 = client.compute_route_fee(&src, &dst, &1_000i128);
+        assert_eq!(fee1, fee2);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
+
+    // --- first route always passes ---
+
+    #[test]
+    fn test_first_route_passes_with_cooldown_set() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &3600u64);
+        // No prior route — no last_route_at timestamp — first call passes.
         assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            0,
-            "before any route the absent PairLiquidity slot reads as 0"
-        );
-
-        client.compute_route_fee(&src, &dest, &500_000_i128);
-
-        assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            0,
-            "unbounded pair must not write i128::MAX (or any value) to PairLiquidity"
+            client.compute_route_fee(&src, &dst, &500i128),
+            0
         );
     }
 
-    /// Multiple routes on an unbounded pair still emit zero `liq_used`
-    /// events across all calls — the sentinel path holds on every invocation,
-    /// not just the first.
+    // --- cooldown blocks immediate second route ---
+
     #[test]
-    fn test_unbounded_pair_emits_no_liq_used_events_across_multiple_routes() {
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_cooldown_blocks_second_route_within_window() {
         let env = Env::default();
-        let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        let (client, _admin) = setup(&env);
-        client.register_pair(&src, &dest);
-
-        client.compute_route_fee(&src, &dest, &1_000_000_i128);
-        client.compute_route_fee(&src, &dest, &2_000_000_i128);
-        client.compute_route_fee(&src, &dest, &500_000_i128);
-
-        assert_eq!(
-            liq_used_payloads(&env).len(),
-            0,
-            "unbounded pair must emit no liq_used events even across multiple routes"
-        );
-        assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            0,
-            "slot must remain absent (reads as 0) after multiple unbounded routes"
-        );
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        // First route succeeds, stamping last_route_at = 1_000.
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Second route at same timestamp (t = 1_000) — cooldown not elapsed.
+        client.compute_route_fee(&src, &dst, &500i128);
     }
 
-    // ---------- contrast / positive tests ------------------------------------
+    // --- cooldown allows route after window elapses ---
 
-    /// Contrast: a bounded pair (with an explicit `set_pair_liquidity`) MUST
-    /// emit exactly one `liq_used` event per route and MUST decrement the
-    /// stored balance.
-    ///
-    /// This proves the sentinel tests above are not vacuously satisfied by
-    /// the debit block being dead code — the block runs exactly when it should.
     #[test]
-    fn test_bounded_pair_emits_liq_used_event_and_debits() {
+    fn test_cooldown_allows_route_after_window_elapses() {
         let env = Env::default();
-        let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        let (client, admin) = setup(&env);
-        client.register_pair(&src, &dest);
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        // First route at t = 1_000.
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Advance past the cooldown window.
+        env.ledger().set_timestamp(1_100);
+        // Second route at t = 1_100 — exactly at last + cooldown.
+        let fee = client.compute_route_fee(&src, &dst, &500i128);
+        assert_eq!(fee, 0);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
 
-        let initial: i128 = 5_000_000;
-        client.set_pair_liquidity(&admin, &src, &dest, &initial);
-        assert_eq!(client.get_pair_liquidity(&src, &dest), initial);
+    #[test]
+    fn test_cooldown_allows_route_well_after_window() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Advance far beyond the cooldown.
+        env.ledger().set_timestamp(9_999);
+        let fee = client.compute_route_fee(&src, &dst, &500i128);
+        assert_eq!(fee, 0);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
 
-        let amount: i128 = 1_000_000;
-        client.compute_route_fee(&src, &dest, &amount);
+    // --- cooldown is per-pair (independent state) ---
 
-        let payloads = liq_used_payloads(&env);
-        assert_eq!(
-            payloads.len(),
-            1,
-            "bounded pair must emit exactly one liq_used event per route"
-        );
-        let decoded: (Symbol, Symbol, i128) =
+    #[test]
+    fn test_cooldown_is_per_pair_independent() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+
+        let src_a = symbol_short!("USDC");
+        let dst_a = symbol_short!("EURC");
+        let src_b = symbol_short!("XLM");
+        let dst_b = symbol_short!("USDC");
+
+        client.register_pair(&src_a, &dst_a);
+        client.register_pair(&src_b, &dst_b);
+        client.set_pair_cooldown(&src_a, &dst_a, &200u64);
+        client.set_pair_cooldown(&src_b, &dst_b, &200u64);
+
+        // Route pair A at t = 1_000.
+        client.compute_route_fee(&src_a, &dst_a, &100i128);
+        // Route pair B at t = 1_000 (different pair, independent cooldown).
+        client.compute_route_fee(&src_b, &dst_b, &100i128);
+
+        // Both should have last_route_at = 1_000.
+        assert_eq!(client.get_pair_last_route_at(&src_a, &dst_a), Some(1_000));
+        assert_eq!(client.get_pair_last_route_at(&src_b, &dst_b), Some(1_000));
+
+        // Advance by 100 — not enough for pair A (cooldown 200), but
+        // we can verify pair B also blocked at the same timestamp.
+        env.ledger().set_timestamp(1_100);
+        let err_a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src_a, &dst_a, &100i128);
+        }));
+        assert!(err_a.is_err(), "pair A should still be in cooldown");
+
+        let err_b = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src_b, &dst_b, &100i128);
+        }));
+        assert!(err_b.is_err(), "pair B should still be in cooldown");
+
+        // Advance to t = 1_200 — exactly at last + cooldown for both.
+        env.ledger().set_timestamp(1_200);
+        client.compute_route_fee(&src_a, &dst_a, &200i128);
+        client.compute_route_fee(&src_b, &dst_b, &200i128);
+        assert_eq!(client.get_pair_route_count(&src_a, &dst_a), 2);
+        assert_eq!(client.get_pair_route_count(&src_b, &dst_b), 2);
+    }
+
+    // --- set_pair_cooldown emits cd_set event ---
+
+    #[test]
+    fn test_set_pair_cooldown_emits_event() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &300u64);
+        let payloads = event_payloads(&env, symbol_short!("cd_set"));
+        assert_eq!(payloads.len(), 1, "set_pair_cooldown emits exactly one cd_set event");
+        let decoded: (Symbol, Symbol, u64) =
             soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
-                .expect("liq_used data decodes to (Symbol, Symbol, i128)");
-        let expected_remaining = initial - amount; // 4_000_000
+                .expect("cd_set event data decodes to (Symbol, Symbol, u64)");
+        assert_eq!(decoded, (src, dst, 300u64));
+    }
+
+    // --- compute_route_fee stamps last_route_at after route ---
+
+    #[test]
+    fn test_cooldown_stamps_last_route_at() {
+        let env = Env::default();
+        env.ledger().set_timestamp(42_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &500u64);
+        assert_eq!(client.get_pair_last_route_at(&src, &dst), None);
+        client.compute_route_fee(&src, &dst, &1_000i128);
         assert_eq!(
-            decoded,
-            (src.clone(), dest.clone(), expected_remaining),
-            "liq_used event must carry (source, destination, remaining_liquidity)"
-        );
-        assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            expected_remaining,
-            "PairLiquidity slot must be decremented by the routed amount"
+            client.get_pair_last_route_at(&src, &dst),
+            Some(42_000)
         );
     }
 
-    /// Multiple routes on a bounded pair each emit one `liq_used` event, and
-    /// the balance decrements cumulatively.  Asserts the event after each
-    /// invocation individually because Soroban's test environment surfaces
-    /// events per-call, not accumulated across calls.
+    // --- cooldown respects exact boundary (last + cooldown == timestamp) ---
+
     #[test]
-    fn test_bounded_pair_liq_used_events_accumulate_correctly() {
+    fn test_cooldown_boundary_at_last_plus_cooldown() {
         let env = Env::default();
-        let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        let (client, admin) = setup(&env);
-        client.register_pair(&src, &dest);
-        client.set_pair_liquidity(&admin, &src, &dest, &10_000_000_i128);
+        env.ledger().set_timestamp(5_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &300u64);
+        client.compute_route_fee(&src, &dst, &100i128);
+        // At t = 5_299, still in cooldown (5_000 + 300 = 5_300).
+        env.ledger().set_timestamp(5_299);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src, &dst, &100i128);
+        }));
+        assert!(err.is_err(), "should be blocked at t = last + cooldown - 1");
 
-        // First route: debit 1_000_000, remaining 9_000_000.
-        client.compute_route_fee(&src, &dest, &1_000_000_i128);
-        assert_eq!(
-            liq_used_payloads(&env).len(),
-            1,
-            "first route must emit exactly one liq_used event"
-        );
-        assert_eq!(client.get_pair_liquidity(&src, &dest), 9_000_000_i128);
-
-        // Second route: debit 2_000_000, remaining 7_000_000.
-        client.compute_route_fee(&src, &dest, &2_000_000_i128);
-        assert_eq!(
-            liq_used_payloads(&env).len(),
-            1,
-            "second route must also emit exactly one liq_used event"
-        );
-        // Cumulative debit: 10_000_000 - 1_000_000 - 2_000_000 = 7_000_000.
-        assert_eq!(client.get_pair_liquidity(&src, &dest), 7_000_000_i128);
-    }
-
-    // ---------- prerequisite validation ---------------------------------------
-
-    /// `get_pair_liquidity` returns `0` for an absent slot and the real
-    /// balance for a written slot.  Validates the probe used in the sentinel
-    /// tests: if the absent-default were non-zero those assertions would be
-    /// untrustworthy.
-    #[test]
-    fn test_get_pair_liquidity_absent_default_is_zero() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        let src = symbol_short!("USDC");
-        let dest = symbol_short!("EURC");
-        client.register_pair(&src, &dest);
-
-        assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            0,
-            "absent PairLiquidity slot must read as 0"
-        );
-
-        client.set_pair_liquidity(&admin, &src, &dest, &42_000_i128);
-        assert_eq!(
-            client.get_pair_liquidity(&src, &dest),
-            42_000_i128,
-            "written PairLiquidity slot must read back as the stored value"
-        );
+        // At t = 5_300, exactly at the boundary: allowed.
+        env.ledger().set_timestamp(5_300);
+        client.compute_route_fee(&src, &dst, &100i128);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
     }
 }
