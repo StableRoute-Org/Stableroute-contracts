@@ -6,6 +6,13 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 
 - **StableRouteRouter** — Soroban contract placeholder for routing metadata and route integrity (version, route tags). Production logic will integrate with path payments and liquidity data.
 
+## Documentation
+
+- **[Storage model & DataKey reference](docs/storage.md)** — authoritative
+  reference for every on-chain storage slot: key shape, value type, tier,
+  default-when-absent, reader/writer entrypoints, and TTL classification.
+- **[ABI reference](docs/abi.md)** — generated client-facing interface.
+
 ## Security
 
 See **[`SECURITY.md`](SECURITY.md)** for the router's trust model (single
@@ -73,19 +80,20 @@ in [`src/lib.rs`](src/lib.rs).
 | 4 | `FeeBpsTooHigh` | `set_pair_fee_bps` | Fee exceeds `MAX_FEE_BPS` (1000 bps = 10%). Lower the fee. |
 | 5 | `PairNotRegistered` | `compute_route_fee`, `quote_route` | Register the pair before routing/quoting. |
 | 6 | `AmountMustBePositive` | `compute_route_fee`, `quote_route`, `set_pair_liquidity`, `set_pair_min_amount`, `set_pair_max_amount` | Amount/value must be positive (or non-negative where noted). |
-| 7 | `NoPendingAdminTransfer` | `accept_admin_transfer` | No handover is pending; nothing to accept. |
-| 8 | `NotPendingAdmin` | `accept_admin_transfer` | Caller is not the proposed pending admin. |
+| 7 | `NoPendingAdminTransfer` | `accept_admin_transfer`, `force_admin_transfer` | No handover is pending; nothing to accept/force. |
+| 8 | `NotPendingAdmin` | `accept_admin_transfer`, `force_admin_transfer` | Caller is not the proposed pending admin, or `force_admin_transfer` was called with the wrong new_admin. |
 | 9 | `ContractPaused` | state-mutating entrypoints (`register_pair`, `set_pair_fee_bps`, …) | Router is paused; retry after `unpause`. |
 | 10 | `AmountBelowMin` | `compute_route_fee` | Amount is below the pair's configured minimum. |
 | 11 | `AmountAboveMax` | `compute_route_fee` | Amount is above the pair's configured maximum. |
 | 12 | `InsufficientLiquidity` | `compute_route_fee` | Reported pair liquidity is below the requested amount. |
 | 13 | `MigrationVersionMismatch` | `migrate_v1_to_v2` | Schema is not at v1; migration already applied. |
 | 14 | `TimelockNotElapsed` | `accept_admin_transfer` | Governance timelock has not elapsed yet; retry after the queued ETA. |
-| 15 | `NotAuthorized` | `set_pair_liquidity` | Caller is neither the admin nor the configured oracle. |
-| 16 | `ReentrantCall` | `compute_route_fee` | Route accounting was re-entered while locked; retry only after the first call completes. |
+| 15 | `ReentrantCall` | `compute_route_fee` | Route accounting was re-entered while locked; retry only after the first call completes. |
+| 16 | `NotAuthorized` | `set_pair_liquidity` | Caller is neither the admin nor the configured oracle. |
 | 17 | `RouteCooldownActive` | `compute_route_fee` | Pair cooldown has not elapsed since the previous routed amount. |
-| 18 | `BatchTooLarge` | `register_pairs`, `set_pair_fees_bps` | Batch length exceeds `MAX_BATCH_SIZE` (100). Split into smaller batches. |
-| 19 | `EmptyBatch` | `register_pairs`, `set_pair_fees_bps` | Batch contains no entries. Provide at least one pair or fee update. |
+| 18 | `BatchTooLarge` | `register_pairs`, `set_pair_fees_bps` | Batch exceeds `MAX_BATCH_SIZE` (100) entries. Split into smaller batches. |
+| 19 | `EmptyBatch` | `register_pairs`, `set_pair_fees_bps` | Batch must contain at least one entry. |
+| 20 | `CooldownTooLarge` | `set_pair_cooldown` | Cooldown exceeds `MAX_COOLDOWN_SECS` (30 days). Lower the value. |
 
 > **Maintainers:** when you append a new `RouterError` variant, add a row
 > here with the next sequential code. Never edit an existing code/row.
@@ -112,6 +120,49 @@ would otherwise waste storage rent and pollute future pair enumeration.
 `cfg_clr` companion event. Re-registering the same pair therefore starts from
 the documented defaults instead of reviving stale fee, bounds, or liquidity
 values.
+
+## Roles & least privilege
+
+The router separates governance from the high-frequency liquidity feed:
+
+- **Admin** (`DataKey::Admin`) — the single governance role. Required by
+  every state-changing entrypoint, including `set_oracle` and
+  `remove_oracle`.
+- **Oracle** (`DataKey::Oracle`) — an optional, scoped role. The oracle
+  may call `set_pair_liquidity` and **nothing else** — it cannot set
+  fees, pause, rotate admin, or upgrade. This lets a frequently rotated
+  off-chain key keep the liquidity feed fresh without holding governance
+  power.
+
+### Oracle lifecycle
+
+| Action | Entrypoint | Auth | Event |
+|--------|-----------|------|-------|
+| Grant / rotate | `set_oracle(oracle)` | admin | `orac_set` |
+| Revoke | `remove_oracle()` | admin | `orac_rm` |
+| Inspect | `get_oracle()` | none (read) | — |
+
+### Oracle revocation
+
+`remove_oracle` clears `DataKey::Oracle` entirely. This is the recovery
+path for a **compromised oracle key**: rotation via `set_oracle` always
+leaves *some* oracle authorized, whereas removal returns the contract to
+an **admin-only** liquidity feed.
+
+- After removal, `set_pair_liquidity` accepts only the admin again. No
+  special-case code is needed: the dual-auth check
+  (`caller != admin && Some(caller) != oracle`) naturally degrades to
+  admin-only when the slot is absent, because `Some(caller)` can never
+  equal `None`. A revoked oracle is rejected with `NotAuthorized` (#15),
+  the same code any other unauthorized caller receives.
+- Removal is **idempotent** — calling `remove_oracle` when no oracle is
+  configured is a clean no-op.
+- Every call emits an `orac_rm` event carrying the previously configured
+  oracle (`None` on a no-op) so indexers can audit revocations.
+- The missing-admin path reuses `NotInitialized` (#2), like every other
+  admin-gated entrypoint; no new error code was added.
+- The admin can later grant the role to a fresh key with `set_oracle`
+  once the incident is resolved.
 
 ## CI/CD
 
@@ -142,6 +193,9 @@ tiers) and the PR checklist.
 **`require_admin`** — every admin-gated entrypoint in `StableRouteRouter` calls the private `fn require_admin(env: &Env) -> Address` helper instead of repeating the load-unwrap-require_auth block inline. When adding a new admin-gated entrypoint, start the body with `Self::require_admin(&env);`. Do not duplicate the pattern manually.
 
 ## Testing notes
+
+### Authorization testing
+All admin-gated entrypoints have negative-authorization tests in `test_i19_authorization` (asserting non-admins are rejected) and positive controls (asserting admins can invoke them). When adding a new admin-gated entrypoint, add a corresponding `test_*_requires_admin` case to this module.
 
 ## Liquidity consumption model
 
@@ -206,67 +260,15 @@ buffer:
 |------------|-------|--------------|------|
 | constructor | `init` | `admin` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
 | `register_pair` | `pair_reg` | `(source, destination)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
-| `register_pairs` | `pair_reg` (per entry) | `(source, destination)` (per entry) | `test_register_pairs_happy_path` |
 | `set_pair_fee_bps` | `fee_set` | `(source, destination, fee_bps)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
-| `set_pair_fees_bps` | `fee_set` (per entry) | `(source, destination, fee_bps)` (per entry) | `test_set_pair_fees_bps_happy_path` |
 | `set_pair_liquidity` | `liq_set` | `(source, destination, liquidity)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
+| `set_pair_cooldown` | `cd_set` | `(source, destination, cooldown_secs)` | |
 | `unregister_pair` | `unreg` | `(source, destination)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
-| `unregister_pair` | `cfg_clr` | `(source, destination)` | `test_pair_lifecycle_events_have_exact_payloads_and_counts` |
-| `compute_route_fee` | `liq_used` | `(source, destination, remaining_liquidity)` | `test_liq_used_event_emitted_with_remaining` |
 
 Two edge-case tests guard idempotency and storage boundaries: unregistering a
 never-registered pair stays a clean no-op while still emitting the lifecycle
-and config-clear events, and re-registering after unregister restores the pair
-with fee, bounds, and liquidity reset to their documented defaults.
-
-## Upgrades
-
-The router supports in-place WASM upgrades via the admin-gated `upgrade` entrypoint,
-so bug fixes can be deployed without losing pair state, admin configuration, or
-route history.
-
-**Flow:**
-
-1. Build the new WASM artifact:
-   ```bash
-   cargo build --target wasm32-unknown-unknown --release
-   ```
-2. Install the WASM on-chain and obtain its hash:
-   ```bash
-   soroban lab build \
-     --copy-to target/wasm32-unknown-unknown/release/stableroute_contracts.wasm
-
-   soroban contract install \
-     --source <admin-key> \
-     --network <network> \
-     --wasm target/wasm32-unknown-unknown/release/stableroute_contracts.wasm
-   ```
-   The command prints a `BytesN<32>` WASM hash (e.g. `cafebabe...`).
-
-3. Call the `upgrade` entrypoint as the admin:
-   ```bash
-   soroban contract invoke \
-     --source <admin-key> \
-     --network <network> \
-     --id <contract-id> \
-     -- \
-     upgrade \
-     --new_wasm_hash cafebabe...
-   ```
-
-**Security notes:**
-
-- Only the admin (`DataKey::Admin`) can call `upgrade`; the entrypoint uses
-  `require_admin` and will panic with `NotInitialized` (#2) if the contract
-  has not been initialised.
-- The call emits an `upgraded` event carrying the new WASM hash, providing a
-  censorable audit trail for indexers and off-chain watchers.
-- Storage (`DataKey` slots) is preserved across the upgrade — the admin, all
-  registered pairs, fees, liquidity reports, route counters, and configuration
-  survive the WASM replacement.
-- `upgrade` is intentionally **not** paused-gated: the admin should be able to
-  fix a bug even while the contract is emergency-stopped. The admin can always
-  unpause, so there is no escalation path through this exception.
+event, and re-registering after unregister restores the pair without clearing
+the stored `PairFeeBps` value.
 
 ## License
 

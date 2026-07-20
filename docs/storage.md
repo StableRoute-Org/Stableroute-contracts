@@ -1,54 +1,125 @@
 # StableRoute — Storage Model & DataKey Reference
 
 Authoritative reference for the router's on-chain storage
-(`src/lib.rs`). Every `DataKey` variant is listed with its key shape, value
-type, storage tier, default-when-absent, the entrypoints that read/write
-it, and its TTL class. Defaults are cross-checked against the `unwrap_or`
-values in the source.
+([`src/lib.rs`](../src/lib.rs)). Every `DataKey` variant is listed with its key
+shape, value type, storage tier, default-when-absent, the entrypoints that
+read/write it, and its TTL class. Defaults are cross-checked against the
+`unwrap_or` values in the source.
 
 ## Sentinel conventions
 
-- An **absent `bool`** reads as `false` (registration, paused).
+- An **absent `bool`** reads as `false` (pair registration, paused,
+  reentrancy lock).
 - **`i128::MAX`** is the "unbounded" sentinel for `PairMaxAmount` and for
-  liquidity *inside fee computation*.
-- **`0`** is the default for counters, fees, and `PairMinAmount`.
+  liquidity *inside `compute_route_fee` only*.
+- **`0`** is the default for counters, fees, timestamps (as `u64`),
+  `PairMinAmount`, and cooldowns.
 - An **absent `Option`** stays `None` (admin, pending admin, fee recipient,
-  last-route timestamp) — distinct from a zero value.
+  last-route timestamp, max fee absolute, oracle) — distinct from a zero
+  value.
+- `SchemaVersion` defaults to **`1`** when absent (the implicit pre-migration
+  default).
+
+## Storage tier
+
+All twenty `DataKey` slots live in **persistent** storage; the contract uses
+no instance or temporary storage today. Persistent entries are subject to
+state archival once their TTL lapses: a pair configured long ago but not
+routed recently can have its entries archived and must be restored (bumped)
+before use.
+
+### TTL classes
+
+| Class | Description | Write frequency | Archival risk |
+|-------|-------------|-----------------|---------------|
+| **Static** | Written once at construction or migration; never changed afterward | Once | Low — bump once after deploy |
+| **Config** | Admin-gated governance/config writes | Rare (governance events) | Moderate — bump after each governance action |
+| **Hot** | Written on every `compute_route_fee` call | Every route | **High** — each route extends TTL naturally; but infrequently-routed pairs' hot slots can archive |
+
+The primary TTL mitigation is the natural write frequency of hot slots: every
+`compute_route_fee` call extends the TTL of `TotalRoutesAllTime`,
+`PairLastRouteAt`, `PairRouteCount`, `PairVolume`, and (when set)
+`PairLiquidity`. The `ReentrancyLock` is also written per-route. For
+infrequently-routed pairs, a dedicated TTL-extension ("bump") pass on
+persistent keys is the reference mitigation.
 
 ## DataKey table
 
-| DataKey | Key shape | Value | Tier | Default when absent | Read by | Written by |
+### Global singletons
+
+| DataKey | Value type | Tier | TTL class | Default when absent | Read by | Written by |
 |---|---|---|---|---|---|---|
-| `Admin` | singleton | `Address` | persistent | `None` | `get_admin`, `require_admin` | `init`, `accept_admin_transfer` |
-| `PendingAdmin` | singleton | `Address` | persistent | `None` | `get_pending_admin` | `propose_admin_transfer`; removed by `accept`/`cancel` |
-| `Paused` | singleton | `bool` | persistent | `false` | `is_paused`, pause gates | `pause`, `unpause` |
-| `FeeRecipient` | singleton | `Address` | persistent | `None` | `get_fee_recipient` | `set_fee_recipient` |
-| `TotalRoutesAllTime` | singleton | `u64` | persistent | `0` | `get_total_routes_all_time` | `compute_route_fee` |
-| `SchemaVersion` | singleton | `u32` | persistent | `1` | `get_schema_version` | `migrate_v1_to_v2` |
-| `Pair` | `(Symbol, Symbol)` | `bool` | persistent | `false` | `is_pair_registered`, `is_pair_active`, `get_pair_info`, `compute_route_fee`, `quote_route` | `register_pair`; removed by `unregister_pair` |
-| `PairFeeBps` | `(Symbol, Symbol)` | `u32` | persistent | `0` | `get_pair_fee_bps`, `get_pair_info`, compute/quote | `set_pair_fee_bps`; cleared by `unregister_pair` |
-| `PairMinAmount` | `(Symbol, Symbol)` | `i128` | persistent | `0` | `get_pair_min_amount`, `get_pair_info`, `compute_route_fee` | `set_pair_min_amount`; cleared by `unregister_pair` |
-| `PairMaxAmount` | `(Symbol, Symbol)` | `i128` | persistent | `i128::MAX` | `get_pair_max_amount`, `get_pair_info`, `compute_route_fee` | `set_pair_max_amount`; cleared by `unregister_pair` |
-| `PairLiquidity` | `(Symbol, Symbol)` | `i128` | persistent | `0`† | `get_pair_liquidity`, `get_pair_info`, `is_pair_active`, `compute_route_fee`† | `set_pair_liquidity`; cleared by `unregister_pair` |
-| `PairLastRouteAt` | `(Symbol, Symbol)` | `u64` | persistent | `None` | `get_pair_last_route_at`, `get_pair_info` (as `0`) | `compute_route_fee` |
+| `Admin` | `Address` | persistent | **Static** | `None` → `NotInitialized` (#2) | `get_admin`, `require_admin` | `__constructor`, `accept_admin_transfer`, `force_admin_transfer` |
+| `PendingAdmin` | `Address` | persistent | **Config** | `None` | `get_pending_admin`, `get_pending_admin_info`, `accept_admin_transfer`, `force_admin_transfer` | `propose_admin_transfer`; removed by `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
+| `PendingAdminEta` | `u64` | persistent | **Config** | `None` | `get_pending_admin_eta`, `get_pending_admin_info`, `accept_admin_transfer`, `force_admin_transfer` | `propose_admin_transfer`; removed by `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
+| `Timelock` | `u64` | persistent | **Config** | `0` (instant handover) | `get_timelock`, `propose_admin_transfer` | `set_timelock` |
+| `Paused` | `bool` | persistent | **Config** | `false` | `is_paused`, `register_pair`, `register_pairs`, `set_pair_fee_bps`, `set_pair_fees_bps`, `compute_route_fee` | `pause`, `unpause` |
+| `FeeRecipient` | `Address` | persistent | **Config** | `None` | `get_fee_recipient` | `set_fee_recipient` |
+| `MaxFeeAbsolute` | `i128` | persistent | **Config** | `None` | `get_max_fee_absolute`, `apply_fee_cap` (in `compute_route_fee` and `quote_route`) | `set_max_fee_absolute` |
+| `Oracle` | `Address` | persistent | **Config** | `None` | `get_oracle`, `set_pair_liquidity` (dual-auth check) | `set_oracle`; removed by `remove_oracle` |
+| `TotalRoutesAllTime` | `u64` | persistent | **Hot** | `0` | `get_total_routes_all_time` | `compute_route_fee` (saturating `+1`) |
+| `SchemaVersion` | `u32` | persistent | **Static** | `1` (implicit v1) | `get_schema_version` | `migrate_v1_to_v2` |
+| `ReentrancyLock` | `bool` | persistent | **Hot** | `false` | `enter_nonreentrant` | `enter_nonreentrant` (→ `true`), `exit_nonreentrant` (→ `false`) |
+
+### Per-pair slots — `(Symbol, Symbol)`
+
+All per-pair slots are keyed by `(source, destination)` tuple. Direction
+matters: `(USDC, EURC)` and `(EURC, USDC)` are independent storage slots.
+
+| DataKey | Value type | Tier | TTL class | Default when absent | Read by | Written by |
+|---|---|---|---|---|---|---|
+| `Pair` | `bool` | persistent | **Config** | `false` (not registered) | `is_pair_registered`, `is_pair_active`, `get_pair_info`, `get_pair_info_ext`, `require_pair_registered`, `compute_route_fee`, `quote_route` | `register_pair`, `register_pairs`; removed by `unregister_pair` |
+| `PairFeeBps` | `u32` | persistent | **Config** | `0` (free) | `get_pair_fee_bps`, `get_pair_info`, `get_pair_info_ext`, `compute_route_fee`, `quote_route` | `set_pair_fee_bps`, `set_pair_fees_bps`; cleared by `clear_pair_config` (`unregister_pair`) |
+| `PairMinAmount` | `i128` | persistent | **Config** | `0` (no floor) | `get_pair_min_amount`, `get_pair_info`, `get_pair_info_ext`, `compute_route_fee` | `set_pair_min_amount`; cleared by `clear_pair_config` (`unregister_pair`) |
+| `PairMaxAmount` | `i128` | persistent | **Config** | `i128::MAX` (no ceiling) | `get_pair_max_amount`, `get_pair_info`, `get_pair_info_ext`, `compute_route_fee` | `set_pair_max_amount`; cleared by `clear_pair_config` (`unregister_pair`) |
+| `PairLiquidity` | `i128` | persistent | **Hot**† | `0` (getters), `i128::MAX` (`compute_route_fee` only) | `get_pair_liquidity`, `get_pair_info`, `get_pair_info_ext`, `is_pair_active`, `compute_route_fee` | `set_pair_liquidity`, `compute_route_fee` (decrement); cleared by `clear_pair_config` (`unregister_pair`) |
+| `PairLastRouteAt` | `u64` | persistent | **Hot** | `None` (`Option`); `0` in `get_pair_info`/`get_pair_info_ext` | `get_pair_last_route_at`, `get_pair_info`, `get_pair_info_ext`, `compute_route_fee` (cooldown check) | `compute_route_fee`; removed by `purge_pair_metrics` |
+| `PairRouteCount` | `u64` | persistent | **Hot** | `0` | `get_pair_route_count`, `get_pair_info_ext` | `compute_route_fee` (saturating `+1`); removed by `purge_pair_metrics` |
+| `PairVolume` | `i128` | persistent | **Hot** | `0` | `get_pair_volume`, `get_pair_info_ext` | `compute_route_fee` (saturating `+amount`); removed by `purge_pair_metrics` |
+| `PairCooldown` | `u64` | persistent | **Config** | `0` (disabled) | `get_pair_cooldown`, `get_pair_info_ext`, `compute_route_fee` (rate-limit gate) | `set_pair_cooldown`; cleared by `clear_pair_config` (`unregister_pair`) |
 
 † **Liquidity default is context-dependent.** `get_pair_liquidity`,
-`get_pair_info`, and `is_pair_active` treat an absent slot as `0`. But
-`compute_route_fee` reads it with `unwrap_or(i128::MAX)` — i.e. an
-unconfigured pair is treated as having *unbounded* liquidity for routing.
-Set an explicit liquidity value to enforce the `InsufficientLiquidity`
-(#12) guard.
+`get_pair_info`, `get_pair_info_ext`, and `is_pair_active` treat an absent
+slot as `0`. But `compute_route_fee` reads it with `unwrap_or(i128::MAX)` —
+i.e. an unconfigured pair is treated as having *unbounded* liquidity for
+routing. Set an explicit liquidity value to enforce the
+`InsufficientLiquidity` (#12) guard.
 
-## Storage tier & TTL
+## Clear-on-unregister slots
 
-All slots live in **persistent** storage; the contract uses no instance or
-temporary storage today (the `DataKey` doc comment reserves instance
-storage for future hot config). Persistent entries are subject to state
-archival once their TTL lapses: a pair configured long ago but not routed
-recently can have its entries archived and must be restored (bumped)
-before use. The mitigation is a TTL-extension ("bump") pass on
-frequently-read keys; any future TTL-bumping work is the reference
-mitigation for this archival risk.
+`unregister_pair` removes `Pair` and calls `clear_pair_config`, which
+removes these per-pair config slots so that re-registering the same corridor
+starts from documented defaults:
+
+- `PairFeeBps`
+- `PairMinAmount`
+- `PairMaxAmount`
+- `PairLiquidity`
+- `PairCooldown`
+
+These operational-history slots are **deliberately preserved** across
+unregister/re-register cycles:
+
+- `PairLastRouteAt`
+- `PairRouteCount`
+- `PairVolume`
+
+Use `purge_pair_metrics` as an explicit, opt-in way to discard a pair's
+lifetime history.
+
+## `compute_route_fee` write summary
+
+On every successful route, the following slots are written (extending their
+persistent TTL):
+
+| Slot | Operation | Guard |
+|------|-----------|-------|
+| `ReentrancyLock` | `true` → … → `false` | non-reentrant gate |
+| `TotalRoutesAllTime` | `saturating_add(1)` | protocol-wide |
+| `PairRouteCount` | `saturating_add(1)` | per-pair |
+| `PairVolume` | `saturating_add(amount)` | per-pair |
+| `PairLastRouteAt` | `env.ledger().timestamp()` | per-pair |
+| `PairLiquidity` | `saturating_sub(amount)` | **only when set** (≠ `i128::MAX`) |
 
 ## Versioning
 

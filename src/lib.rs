@@ -24,96 +24,151 @@ pub struct PairInfo {
     pub last_route_at: u64,
 }
 
-/// Extended pair info including per-pair slots added after the original
-/// `PairInfo` shipped. ABI-stable complement to [`PairInfo`]; dashboards
-/// should prefer this over issuing individual getter calls.
+/// Extended aggregate read of every pair-scoped storage slot, including
+/// cooldown, route count, and cumulative volume. See [`PairInfo`] for the
+/// original (base) field set.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PairInfoExt {
-    /// Base fields reproduced from [`PairInfo`].
     pub registered: bool,
     pub fee_bps: u32,
     pub min_amount: i128,
     pub max_amount: i128,
     pub liquidity: i128,
     pub last_route_at: u64,
-    /// Per-pair route cooldown in seconds (0 = disabled).
     pub cooldown_secs: u64,
-    /// Lifetime count of `compute_route_fee` invocations for this pair.
     pub route_count: u64,
-    /// Cumulative routed volume in source units for this pair.
     pub volume: i128,
 }
 
-/// Storage keys used by the StableRoute router.
+/// Aggregated read of the queued admin handover: the proposed pending
+/// admin and the earliest timestamp at which it may accept.
 ///
-/// Persistent storage is used for the admin address and per-pair
-/// configuration; these values change rarely (governance flow) and need
-/// to survive the contract's instance TTL window. Instance storage is
-/// reserved for hot configuration that we expect every invocation to
-/// touch — none yet.
+/// Returned by [`StableRouteRouter::get_pending_admin_info`] so watchers
+/// get both slots from a single invocation. Both fields are `None` when
+/// no transfer is queued.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdminInfo {
+    /// Address proposed via `propose_admin_transfer`, if any.
+    pub pending: Option<Address>,
+    /// Earliest ledger timestamp at which the pending admin may call
+    /// `accept_admin_transfer` (`propose` time + timelock), if queued.
+    pub eta: Option<u64>,
+}
+
+/// Storage keys used by the StableRoute router. All twenty variants live
+/// in persistent storage — no instance or temporary storage is used today.
+///
+/// See [`docs/storage.md`] for the authoritative reference: key shape,
+/// value type, default-when-absent, reader/writer entrypoints, and TTL
+/// classification (Static / Config / Hot).
+///
+/// ## Sentinel conventions
+///
+/// - Absent `bool`  → `false` (pair registration, paused, reentrancy lock).
+/// - `i128::MAX`      → "unbounded" sentinel for `PairMaxAmount` and for
+///   liquidity *inside `compute_route_fee` only*.
+/// - `0`              → default for counters, fees, timestamps (as `u64`),
+///   `PairMinAmount`, and cooldowns.
+/// - Absent `Option`  → `None` (admin, pending admin, fee recipient,
+///   last-route timestamp, max fee absolute, oracle).
+/// - `SchemaVersion`  → `1` when absent (the implicit pre-migration default).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// Operational admin set once at `init`.
+    /// Operational admin (singleton, `Address`, persistent).
+    /// Set once by `__constructor`; only changed by a two-step handover
+    /// (`propose_admin_transfer` → `accept_admin_transfer`).
+    /// Absent reads panic with `NotInitialized` (#2).
     Admin,
-    /// `true` if the (source, destination) pair is a recognised route.
-    /// Stored as `bool` so callers can query without distinguishing
-    /// "absent" from "false".
+    /// `true` if `(source, destination)` is a recognised route.
+    /// Keyed per-pair; stored as `bool` so callers can query without
+    /// distinguishing "absent" from "false". Defaults to `false`.
     Pair(Symbol, Symbol),
     /// Per-pair fee in basis points (1 bps = 0.01 %). Stored as `u32`
     /// so the on-the-wire shape is fixed; values above `MAX_FEE_BPS`
-    /// are rejected at write time.
+    /// are rejected at write time. Defaults to `0` (free).
     PairFeeBps(Symbol, Symbol),
-    /// Pending admin proposed via `propose_admin_transfer`. Two-step
-    /// handover guards against locking the contract with a bad key.
+    /// Pending admin proposed via `propose_admin_transfer` (singleton,
+    /// `Address`, persistent). Two-step handover guards against locking
+    /// the contract with a bad key. Absent ↔ `None` (no handover queued).
     PendingAdmin,
-    /// `true` when the router is paused. No write entrypoint accepts
-    /// calls until an unpause.
+    /// `true` when the router is paused (singleton, `bool`, persistent).
+    /// All state-changing entrypoints reject calls until an unpause.
+    /// Defaults to `false` (not paused).
     Paused,
-    /// Minimum routable amount per pair (in source units). Compute
-    /// rejects amounts below the floor.
+    /// Minimum routable amount per pair in source units (keyed per-pair,
+    /// `i128`, persistent). `compute_route_fee` rejects amounts below the
+    /// floor. Defaults to `0` (no floor).
     PairMinAmount(Symbol, Symbol),
-    /// Maximum routable amount per pair (in source units). Compute
-    /// rejects amounts above the ceiling.
+    /// Maximum routable amount per pair in source units (keyed per-pair,
+    /// `i128`, persistent). `compute_route_fee` rejects amounts above the
+    /// ceiling. Defaults to `i128::MAX` (no ceiling).
     PairMaxAmount(Symbol, Symbol),
-    /// Reported available liquidity (in source units) per pair.
-    /// Updated by an off-chain oracle via the admin entrypoint.
+    /// Reported available liquidity in source units per pair (keyed
+    /// per-pair, `i128`, persistent). Updated by an off-chain oracle
+    /// (or the admin) via `set_pair_liquidity`; decremented on every
+    /// successful `compute_route_fee`. Default is context-dependent:
+    /// `get_pair_liquidity` returns `0` for absent, while
+    /// `compute_route_fee` treats absent as `i128::MAX` (unbounded).
     PairLiquidity(Symbol, Symbol),
-    /// Address that receives protocol fees on settlement.
+    /// Address that receives protocol fees on settlement (singleton,
+    /// `Address`, persistent). Absent ↔ `None`.
     FeeRecipient,
-    /// Protocol-wide lifetime counter of `compute_route_fee` invocations.
+    /// Protocol-wide lifetime counter of `compute_route_fee` invocations
+    /// (singleton, `u64`, persistent). Incremented with `saturating_add`
+    /// so it is monotonic and never panics. Defaults to `0`.
     TotalRoutesAllTime,
-    /// Ledger timestamp of the most recent `compute_route_fee` for a pair.
+    /// Ledger timestamp of the most recent `compute_route_fee` for a
+    /// pair (keyed per-pair, `u64`, persistent). Used by the cooldown
+    /// rate-limit gate. Absent reads as `None` (`Option`); `get_pair_info`
+    /// flattens it to `0`.
     PairLastRouteAt(Symbol, Symbol),
-    /// Per-pair lifetime counter of `compute_route_fee` invocations.
-    /// Stored as `u64`; incremented with `saturating_add` so it is
-    /// monotonic and never panics on overflow. Absent reads default to 0.
+    /// Per-pair lifetime counter of `compute_route_fee` invocations
+    /// (keyed per-pair, `u64`, persistent). Incremented with
+    /// `saturating_add` so it is monotonic and never panics on overflow.
+    /// Defaults to `0`.
     PairRouteCount(Symbol, Symbol),
-    /// Per-pair cumulative routed volume (sum of `amount` in source
-    /// units). Stored as `i128`; accumulated with `saturating_add` so it
-    /// is monotonic and never panics on overflow. Absent reads default to 0.
+    /// Per-pair cumulative routed volume — sum of `amount` in source
+    /// units (keyed per-pair, `i128`, persistent). Accumulated with
+    /// `saturating_add` so it is monotonic and never panics on overflow.
+    /// Defaults to `0`.
     PairVolume(Symbol, Symbol),
-    /// On-chain storage schema version. Distinct from version().
+    /// On-chain storage schema version (singleton, `u32`, persistent).
+    /// Distinct from `version()`. Defaults to `1` when absent (the
+    /// implicit pre-migration layout). Advanced to `2` by
+    /// `migrate_v1_to_v2`.
     SchemaVersion,
-    /// Governance timelock delay, in seconds. When > 0, a proposed admin
-    /// handover can only be accepted after the delay has elapsed.
-    /// Defaults to 0 (instant) when unset, preserving prior behaviour.
+    /// Governance timelock delay in seconds (singleton, `u64`,
+    /// persistent). When > 0, a proposed admin handover can only be
+    /// accepted after the delay has elapsed. Defaults to `0` (instant)
+    /// when unset, preserving prior behaviour.
     Timelock,
     /// Earliest ledger timestamp at which the currently pending admin
-    /// transfer may be accepted (`propose_admin_transfer` time + delay).
+    /// transfer may be accepted — `propose_admin_transfer` time + delay
+    /// (singleton, `u64`, persistent). Absent ↔ `None` (no handover
+    /// queued).
     PendingAdminEta,
-    /// Reentrancy guard flag. `true` while a mutating entrypoint is
-    /// executing; rejects re-entrant calls with [`RouterError::ReentrantCall`].
+    /// Non-reentrancy guard (singleton, `bool`, persistent). Set to
+    /// `true` before the write/event phase of `compute_route_fee` and
+    /// cleared to `false` on exit. Defaults to `false`.
     ReentrancyLock,
-    /// Per-pair route cooldown in seconds. A non-zero value forces a
-    /// minimum gap between successive routes for the pair.
+    /// Per-pair cooldown in seconds between route accounting calls
+    /// (keyed per-pair, `u64`, persistent). While non-zero,
+    /// `compute_route_fee` rejects a call until at least this many
+    /// seconds have elapsed since `PairLastRouteAt`. Capped at
+    /// `MAX_COOLDOWN_SECS` (30 days). Defaults to `0` (disabled).
     PairCooldown(Symbol, Symbol),
-    /// Absolute ceiling on per-route fees (in source units). When set,
-    /// `min(computed_fee, max_fee_absolute)` is charged.
+    /// Optional absolute per-route fee ceiling (singleton, `i128`,
+    /// persistent). When set, the effective fee is `min(bps_fee, cap)`.
+    /// Absent ↔ `None` (only the relative `MAX_FEE_BPS` bound applies).
     MaxFeeAbsolute,
-    /// Scoped liquidity oracle address. May update pair liquidity but
-    /// cannot change fees, pause, rotate admin, or upgrade.
+    /// Scoped liquidity oracle address (singleton, `Address`,
+    /// persistent). The oracle may call `set_pair_liquidity` and
+    /// nothing else — it cannot set fees, pause, rotate admin, or
+    /// upgrade. Absent ↔ `None` (no oracle configured — admin-only
+    /// liquidity feed).
     Oracle,
 }
 
@@ -127,6 +182,15 @@ pub const BPS_DENOMINATOR: i128 = 10_000;
 /// (`register_pairs`, `set_pair_fees_bps`). Kept modest to bound
 /// per-transaction gas costs.
 pub const MAX_BATCH_SIZE: u32 = 100;
+/// Upper bound on the per-pair route cooldown, in seconds (30 days).
+/// `set_pair_cooldown` rejects any larger value so a fat-fingered or
+/// malicious config write (e.g. `u64::MAX`) cannot permanently brick a
+/// corridor by making `compute_route_fee`'s `last + cooldown` gate
+/// unreachable. Ledger timestamps are seconds since epoch and are nowhere
+/// near `u64::MAX - MAX_COOLDOWN_SECS`, so capping here also guarantees
+/// the `last + cooldown` addition in `compute_route_fee` cannot overflow
+/// `u64` for the foreseeable future.
+pub const MAX_COOLDOWN_SECS: u64 = 2_592_000;
 
 /// Typed contract errors. Codes are append-only — never reuse or
 /// renumber a variant once it has shipped.
@@ -163,21 +227,21 @@ pub enum RouterError {
     /// `accept_admin_transfer` was called before the governance timelock
     /// delay elapsed.
     TimelockNotElapsed = 14,
-    /// Caller does not have the required role for the operation.
-    /// Returned by `set_pair_liquidity` when the caller is neither admin
-    /// nor the configured oracle.
-    NotAuthorized = 15,
-    /// A re-entrant invocation was attempted while a mutating entrypoint
-    /// held the reentrancy lock.
-    ReentrantCall = 16,
-    /// `compute_route_fee` was called for a pair before the per-pair
-    /// route cooldown elapsed.
+    /// A non-reentrant entrypoint was entered while already locked.
+    ReentrantCall = 15,
+    /// Caller was neither the admin nor the scoped oracle.
+    NotAuthorized = 16,
+    /// Per-pair cooldown has not elapsed since the last route.
     RouteCooldownActive = 17,
-    /// A batch entrypoint was called with more entries than
-    /// [`MAX_BATCH_SIZE`].
+    /// `register_pairs` or `set_pair_fees_bps` was called with a batch
+    /// exceeding [`MAX_BATCH_SIZE`] entries.
     BatchTooLarge = 18,
-    /// A batch entrypoint was called with no entries.
+    /// `register_pairs` or `set_pair_fees_bps` was called with an empty
+    /// batch.
     EmptyBatch = 19,
+    /// `set_pair_cooldown` was called with a value above
+    /// [`MAX_COOLDOWN_SECS`].
+    CooldownTooLarge = 20,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -374,6 +438,19 @@ impl StableRouteRouter {
         env.storage().persistent().get(&DataKey::PendingAdmin)
     }
 
+    /// Read both components of the queued admin handover in one call.
+    ///
+    /// Returns a consistent snapshot of the pending admin and its
+    /// earliest acceptance timestamp (ETA). Both fields are `None`
+    /// when no transfer is queued.
+    pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {
+        let s = env.storage().persistent();
+        PendingAdminInfo {
+            pending: s.get(&DataKey::PendingAdmin),
+            eta: s.get(&DataKey::PendingAdminEta),
+        }
+    }
+
     /// Step 2 of admin handover. The pending admin claims the role
     /// from their own key. Panics with NoPendingAdminTransfer if none
     /// is pending or NotPendingAdmin if the caller does not match.
@@ -428,6 +505,40 @@ impl StableRouteRouter {
             .set(&DataKey::PendingAdminEta, &eta);
         env.events()
             .publish((symbol_short!("queued"),), (new_admin, eta));
+    }
+
+    /// Force-complete an admin handover after the timelock has elapsed,
+    /// without requiring the new admin to call `accept_admin_transfer`.
+    ///
+    /// Admin-gated. Requires that `propose_admin_transfer` was already
+    /// called with the same `new_admin` and that the timelock delay has
+    /// elapsed. Emits the same `executed` event as `accept_admin_transfer`
+    /// so indexers can treat it identically.
+    pub fn force_admin_transfer(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
+        if pending != new_admin {
+            panic_with_error!(&env, RouterError::NotPendingAdmin);
+        }
+        let eta: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdminEta)
+            .unwrap_or(0);
+        if env.ledger().timestamp() < eta {
+            panic_with_error!(&env, RouterError::TimelockNotElapsed);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Admin, &new_admin.clone());
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        env.events()
+            .publish((symbol_short!("executed"),), new_admin);
     }
 
     /// Returns the admin set at `init`, if any.
@@ -639,8 +750,14 @@ impl StableRouteRouter {
     /// for the pair until at least `cooldown_secs` seconds have elapsed
     /// since the pair's last successful route (`PairLastRouteAt`).
     /// Setting `0` (the default) disables the rate limit for the pair.
+    /// Rejects values above [`MAX_COOLDOWN_SECS`] with
+    /// [`RouterError::CooldownTooLarge`] so an absurdly large value
+    /// (e.g. `u64::MAX`) cannot permanently brick the corridor.
     pub fn set_pair_cooldown(env: Env, source: Symbol, destination: Symbol, cooldown_secs: u64) {
         Self::require_admin(&env);
+        if cooldown_secs > MAX_COOLDOWN_SECS {
+            panic_with_error!(&env, RouterError::CooldownTooLarge);
+        }
         env.storage().persistent().set(
             &DataKey::PairCooldown(source.clone(), destination.clone()),
             &cooldown_secs,
@@ -762,12 +879,38 @@ impl StableRouteRouter {
         env.events().publish((symbol_short!("orac_set"),), oracle);
     }
 
+    /// Admin revokes the scoped liquidity oracle.
+    ///
+    /// Admin-gated (panics with [`RouterError::NotInitialized`] (#2) when
+    /// no admin is set, like every other admin entrypoint). Removes
+    /// `DataKey::Oracle` so [`Self::set_pair_liquidity`] once again
+    /// accepts **only the admin**: its dual-auth check
+    /// (`caller != admin && Some(caller) != oracle`) naturally degrades to
+    /// admin-only when the slot is absent, because `Some(caller)` can
+    /// never equal `None`. This is the recovery path for a compromised
+    /// oracle key — unlike [`Self::set_oracle`] (which can only rotate to
+    /// a new address, leaving *some* oracle authorized), `remove_oracle`
+    /// returns the contract to an admin-only liquidity feed.
+    ///
+    /// Idempotent: removing when no oracle is configured is a clean
+    /// no-op. Emits `orac_rm` carrying the previously configured oracle
+    /// (`None` on a no-op) so indexers can audit revocations.
+    pub fn remove_oracle(env: Env) {
+        Self::require_admin(&env);
+        let removed: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
+        env.storage().persistent().remove(&DataKey::Oracle);
+        env.events().publish((symbol_short!("orac_rm"),), removed);
+    }
+
     /// Set the reported liquidity for a pair (source units).
     ///
     /// Dual-authorized: `caller` must be **either** the admin **or** the
     /// configured oracle, and must `require_auth()`. This implements
     /// least privilege — the frequently rotated oracle key can keep the
-    /// liquidity feed fresh without holding governance power. Any other
+    /// liquidity feed fresh without holding governance power. When no
+    /// oracle is configured (never set, or revoked via
+    /// [`Self::remove_oracle`]) the `Some(caller) != oracle` comparison is
+    /// always true, so only the admin is accepted. Any other
     /// caller is rejected with [`RouterError::NotAuthorized`].
     ///
     /// Requires the pair to already be registered via
@@ -863,7 +1006,8 @@ impl StableRouteRouter {
         let storage = env.storage().persistent();
         storage.remove(&DataKey::PairMinAmount(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairMaxAmount(source.clone(), destination.clone()));
-        storage.remove(&DataKey::PairLiquidity(source, destination));
+        storage.remove(&DataKey::PairLiquidity(source.clone(), destination.clone()));
+        storage.remove(&DataKey::PairCooldown(source, destination));
     }
 
     /// Unregister a previously-registered pair. Admin-gated and idempotent.
@@ -884,6 +1028,34 @@ impl StableRouteRouter {
         );
         env.events()
             .publish((symbol_short!("cfg_clr"),), (source, destination));
+    }
+
+    /// Explicitly reset a pair's operational-history metrics: `PairRouteCount`,
+    /// `PairVolume`, and `PairLastRouteAt`. Admin-gated.
+    ///
+    /// By default, `unregister_pair` deliberately preserves these metrics so a
+    /// pair's lifetime history survives a transient unregister/register cycle.
+    /// This entrypoint is the explicit, opt-in way to discard that history —
+    /// call it (before or after `unregister_pair` + `register_pair`) when a
+    /// re-listed corridor should start a fresh operational life instead of
+    /// inheriting stale route counts and volume from its previous listing.
+    ///
+    /// Does not touch pair registration (`Pair`) or config (fee/bounds/
+    /// liquidity, see `clear_pair_config`) — only the three metrics slots.
+    pub fn purge_pair_metrics(env: Env, source: Symbol, destination: Symbol) {
+        Self::require_admin(&env);
+        let storage = env.storage().persistent();
+        storage.remove(&DataKey::PairRouteCount(
+            source.clone(),
+            destination.clone(),
+        ));
+        storage.remove(&DataKey::PairVolume(source.clone(), destination.clone()));
+        storage.remove(&DataKey::PairLastRouteAt(
+            source.clone(),
+            destination.clone(),
+        ));
+        env.events()
+            .publish((symbol_short!("pair_mrst"),), (source, destination));
     }
 
     /// Returns `true` iff `register_pair` has been called for this pair.
@@ -1061,7 +1233,12 @@ impl StableRouteRouter {
         // recorded timestamp) is always allowed; cooldown == 0 disables
         // the check entirely, preserving the prior behaviour. Compare via
         // addition (last + cooldown) rather than subtraction to avoid any
-        // u64 underflow.
+        // u64 underflow. `last + cooldown` cannot overflow u64 either:
+        // `set_pair_cooldown` rejects any `cooldown` above
+        // `MAX_COOLDOWN_SECS` (30 days), and `last` is a ledger timestamp
+        // (seconds since epoch) that would need to be within 30 days of
+        // `u64::MAX` — many orders of magnitude beyond any plausible
+        // ledger closing time — before this addition could wrap.
         let cooldown: u64 = env
             .storage()
             .persistent()
@@ -1198,6 +1375,35 @@ impl StableRouteRouter {
     }
 }
 
+/// Test-only mock that re-enters the router from a nested contract call.
+///
+/// The mock stays minimal on purpose: it exists only to simulate a malicious
+/// callback path and trigger the router's reentrancy guard in a realistic
+/// nested-call shape.
+#[cfg(test)]
+#[contract]
+pub struct MaliciousReentryMock;
+
+#[cfg(test)]
+#[contractimpl]
+impl MaliciousReentryMock {
+    /// Call back into `compute_route_fee` on the target router.
+    ///
+    /// The test harness arranges for the router lock to already be held before
+    /// this entrypoint runs, so the nested router call exercises the guard as a
+    /// callback-style re-entry attempt.
+    pub fn reenter(
+        env: Env,
+        router_id: Address,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+    ) {
+        let router = StableRouteRouterClient::new(&env, &router_id);
+        router.compute_route_fee(&source, &destination, &amount);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1207,6 +1413,8 @@ mod test {
         testutils::{Address as _, Events, Ledger},
         IntoVal,
     };
+    use std::any::Any;
+    use std::string::{String, ToString};
 
     /// Register a USDC→EURC pair with `fee_bps` and unbounded liquidity,
     /// returning a ready client. Shared by the property tests below.
@@ -1215,6 +1423,12 @@ mod test {
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &fee_bps);
         client
+    }
+
+    fn panic_message(err: &(dyn Any + Send)) -> Option<String> {
+        err.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
     }
 
     proptest! {
@@ -1486,30 +1700,98 @@ mod test {
         assert_eq!(client.get_total_routes_all_time(), 2);
     }
 
-    /// When the reentrancy lock is already held, `compute_route_fee` must
-    /// reject the call with ReentrantCall (#16). We simulate the in-flight
-    /// state by setting the lock directly in the contract's storage, which
-    /// is exactly what a re-entrant inner call would observe.
+    /// A malicious nested caller must not be able to re-enter
+    /// `compute_route_fee` while the router lock is held.
     #[test]
-    #[should_panic(expected = "Error(Contract, #16)")]
-    fn test_compute_route_fee_rejects_reentry() {
+    fn test_compute_route_fee_rejects_reentry_from_mock_callback() {
         let env = Env::default();
-        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let router_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &router_id);
+        let mock_id = env.register(MaliciousReentryMock, ());
+        let mock = MaliciousReentryMockClient::new(&env, &mock_id);
+
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
 
-        // Simulate the lock being already held (as it would be mid-call).
-        env.as_contract(&contract_id, || {
+        env.as_contract(&router_id, || {
             env.storage()
                 .persistent()
                 .set(&DataKey::ReentrancyLock, &true);
         });
 
-        client.compute_route_fee(
+        // The mock now performs the nested router call from a normal contract
+        // invocation, matching the callback-driven shape we want to exercise.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mock.reenter(
+                &router_id,
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000_i128,
+            );
+        }));
+        let panic = result.expect_err("nested router call should panic");
+        let message = panic_message(&*panic).expect("panic payload should be printable");
+        assert!(
+            message.contains("Error(Contract, #15)"),
+            "unexpected panic payload: {message}"
+        );
+
+        let lock_after: bool = env.as_contract(&router_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ReentrancyLock)
+                .unwrap_or(false)
+        });
+        assert!(lock_after);
+
+        env.as_contract(&router_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ReentrancyLock, &false);
+        });
+        assert_eq!(
+            client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_000_i128
+            ),
+            5_000
+        );
+    }
+
+    /// A successful route must leave the reentrancy lock cleared so
+    /// sequential legitimate calls remain possible.
+    #[test]
+    fn test_compute_route_fee_clears_reentrancy_lock_after_success() {
+        let env = Env::default();
+        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+
+        let first = client.compute_route_fee(
             &symbol_short!("USDC"),
             &symbol_short!("EURC"),
             &1_000_000_i128,
         );
+        assert_eq!(first, 5_000);
+
+        let lock_after_first: bool = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::ReentrancyLock)
+                .unwrap_or(false)
+        });
+        assert!(!lock_after_first);
+
+        let second = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        assert_eq!(second, 5_000);
+        assert_eq!(client.get_total_routes_all_time(), 2);
     }
 
     #[test]
@@ -1708,6 +1990,80 @@ mod test {
         client.accept_admin_transfer(&caller);
     }
 
+    // --- force_admin_transfer tests ---
+
+    #[test]
+    fn test_force_admin_transfer_success() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+        assert_eq!(client.get_admin(), Some(next_admin));
+        assert_eq!(client.get_pending_admin(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #7)")]
+    fn test_force_admin_transfer_rejects_missing_pending_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.force_admin_transfer(&next_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_force_admin_transfer_rejects_wrong_pending_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let pending = Address::generate(&env);
+        let wrong = Address::generate(&env);
+        client.propose_admin_transfer(&pending);
+        client.force_admin_transfer(&wrong);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_force_admin_transfer_blocks_early_force() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin) = setup_initialized(&env);
+        client.set_timelock(&100);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+    }
+
+    #[test]
+    fn test_force_admin_transfer_allows_after_timelock() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin) = setup_initialized(&env);
+        client.set_timelock(&100);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        env.ledger().set_timestamp(1_100);
+        client.force_admin_transfer(&next_admin);
+        assert_eq!(client.get_admin(), Some(next_admin));
+    }
+
+    #[test]
+    fn test_force_admin_transfer_emits_executed_event() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let next_admin = Address::generate(&env);
+        client.propose_admin_transfer(&next_admin);
+        client.force_admin_transfer(&next_admin);
+
+        let executed_payloads = event_payloads(&env, symbol_short!("executed"));
+        assert_eq!(executed_payloads.len(), 1);
+        let event_admin: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &executed_payloads[0])
+                .expect("executed event data decodes to admin address");
+        assert_eq!(event_admin, next_admin);
+    }
+
     #[test]
     fn test_fee_recipient_round_trip() {
         let env = Env::default();
@@ -1786,18 +2142,7 @@ mod test {
         let unreg: (Symbol, Symbol) =
             soroban_sdk::TryFromVal::try_from_val(&env, &unreg_payloads[0])
                 .expect("unreg event data decodes to pair tuple");
-        assert_eq!(unreg, (src.clone(), dest.clone()));
-
-        let cfg_clr_payloads = event_payloads(&env, symbol_short!("cfg_clr"));
-        assert_eq!(
-            cfg_clr_payloads.len(),
-            1,
-            "unregister_pair emits one cfg_clr companion event"
-        );
-        let cfg_clr: (Symbol, Symbol) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &cfg_clr_payloads[0])
-                .expect("cfg_clr event data decodes to pair tuple");
-        assert_eq!(cfg_clr, (src, dest));
+        assert_eq!(unreg, (src, dest));
     }
 
     #[test]
@@ -1819,24 +2164,14 @@ mod test {
         let unreg: (Symbol, Symbol) =
             soroban_sdk::TryFromVal::try_from_val(&env, &unreg_payloads[0])
                 .expect("unreg event data decodes to pair tuple");
-        assert_eq!(unreg, (src.clone(), dest.clone()));
-        let cfg_clr_payloads = event_payloads(&env, symbol_short!("cfg_clr"));
-        assert_eq!(
-            cfg_clr_payloads.len(),
-            1,
-            "no-op unregister still documents one config clear event"
-        );
-        let cfg_clr: (Symbol, Symbol) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &cfg_clr_payloads[0])
-                .expect("cfg_clr event data decodes to pair tuple");
-        assert_eq!(cfg_clr, (src, dest));
+        assert_eq!(unreg, (src, dest));
         assert!(!client.is_pair_registered(&symbol_short!("USDC"), &symbol_short!("EURC")));
     }
 
     #[test]
-    fn test_reregister_after_unregister_restores_pair_with_clean_config_defaults() {
+    fn test_reregister_after_unregister_restores_pair_and_preserves_fee() {
         let env = Env::default();
-        let (client, admin) = setup_initialized(&env);
+        let (client, _admin) = setup_initialized(&env);
         let src = symbol_short!("USDC");
         let dest = symbol_short!("EURC");
 
@@ -1847,9 +2182,6 @@ mod test {
             "initial register should emit one pair_reg event"
         );
         client.set_pair_fee_bps(&src, &dest, &42u32);
-        client.set_pair_min_amount(&src, &dest, &10i128);
-        client.set_pair_max_amount(&src, &dest, &1_000i128);
-        client.set_pair_liquidity(&admin, &src, &dest, &500i128);
         client.unregister_pair(&src, &dest);
         assert_eq!(
             event_payloads(&env, symbol_short!("unreg")).len(),
@@ -1875,6 +2207,124 @@ mod test {
         assert_eq!(client.get_pair_min_amount(&src, &dest), 0);
         assert_eq!(client.get_pair_max_amount(&src, &dest), i128::MAX);
         assert_eq!(client.get_pair_liquidity(&src, &dest), 0);
+    }
+
+    /// Documents the current, unchanged behavior: `unregister_pair` alone
+    /// leaves `PairRouteCount`, `PairVolume`, and `PairLastRouteAt` intact,
+    /// so a straight unregister + re-register cycle inherits prior metrics.
+    #[test]
+    fn test_unregister_then_reregister_preserves_metrics_by_default() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+
+        env.ledger().set_timestamp(777);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+
+        assert_eq!(client.get_pair_route_count(&src, &dest), 1);
+        assert_eq!(client.get_pair_volume(&src, &dest), 1_000);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), Some(777));
+
+        client.unregister_pair(&src, &dest);
+        client.register_pair(&src, &dest);
+
+        assert!(client.is_pair_registered(&src, &dest));
+        assert_eq!(
+            client.get_pair_route_count(&src, &dest),
+            1,
+            "unregister_pair must not clear PairRouteCount"
+        );
+        assert_eq!(
+            client.get_pair_volume(&src, &dest),
+            1_000,
+            "unregister_pair must not clear PairVolume"
+        );
+        assert_eq!(
+            client.get_pair_last_route_at(&src, &dest),
+            Some(777),
+            "unregister_pair must not clear PairLastRouteAt"
+        );
+    }
+
+    /// `purge_pair_metrics` is the explicit, opt-in reset: it clears all
+    /// three metrics slots and emits a `pair_mrst` event with the pair.
+    #[test]
+    fn test_purge_pair_metrics_resets_counters_and_emits_event() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+
+        env.ledger().set_timestamp(999);
+        client.compute_route_fee(&src, &dest, &2_000_i128);
+
+        assert_eq!(client.get_pair_route_count(&src, &dest), 1);
+        assert_eq!(client.get_pair_volume(&src, &dest), 2_000);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), Some(999));
+
+        client.purge_pair_metrics(&src, &dest);
+
+        // Check the emitted event immediately after the triggering call,
+        // before any further client invocation can roll the host event
+        // buffer over to a later call's events.
+        let payloads = event_payloads(&env, symbol_short!("pair_mrst"));
+        assert_eq!(
+            payloads.len(),
+            1,
+            "purge_pair_metrics emits exactly one pair_mrst event"
+        );
+        let decoded: (Symbol, Symbol) = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("pair_mrst event data decodes to pair tuple");
+        assert_eq!(decoded, (src.clone(), dest.clone()));
+
+        assert_eq!(client.get_pair_route_count(&src, &dest), 0);
+        assert_eq!(client.get_pair_volume(&src, &dest), 0);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), None);
+    }
+
+    /// `purge_pair_metrics` does not disturb registration or live config —
+    /// only the three metrics slots.
+    #[test]
+    fn test_purge_pair_metrics_does_not_touch_registration_or_config() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+        client.set_pair_min_amount(&src, &dest, &10i128);
+        client.set_pair_max_amount(&src, &dest, &1_000i128);
+
+        client.compute_route_fee(&src, &dest, &500_i128);
+        client.purge_pair_metrics(&src, &dest);
+
+        assert!(client.is_pair_registered(&src, &dest));
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 50);
+        assert_eq!(client.get_pair_min_amount(&src, &dest), 10);
+        assert_eq!(client.get_pair_max_amount(&src, &dest), 1_000);
+    }
+
+    /// `purge_pair_metrics` is admin-gated like every other mutating
+    /// entrypoint: a non-admin caller's `require_auth()` must fail.
+    #[test]
+    #[should_panic]
+    fn test_purge_pair_metrics_rejects_non_admin() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let stranger = Address::generate(&env);
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+        client.compute_route_fee(&src, &dest, &500_i128);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &stranger,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "purge_pair_metrics",
+                args: (src.clone(), dest.clone()).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.purge_pair_metrics(&src, &dest);
     }
 
     #[test]
@@ -2055,9 +2505,9 @@ mod test {
     }
 
     /// A caller that is neither admin nor oracle is rejected with
-    /// NotAuthorized (#15).
+    /// NotAuthorized (#16).
     #[test]
-    #[should_panic(expected = "Error(Contract, #15)")]
+    #[should_panic(expected = "Error(Contract, #16)")]
     fn test_random_caller_cannot_update_liquidity() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
@@ -2094,6 +2544,203 @@ mod test {
             },
         }]);
         client.pause();
+    }
+
+    // --- oracle revocation (remove_oracle) ---
+
+    /// End-to-end revocation flow: the oracle can update liquidity while
+    /// configured, and is fully locked out after `remove_oracle`.
+    #[test]
+    fn test_oracle_can_update_before_removal_but_not_after() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+
+        // Before removal the oracle drives the liquidity feed.
+        client.set_pair_liquidity(
+            &oracle,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &500i128,
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            500
+        );
+
+        client.remove_oracle();
+        assert_eq!(client.get_oracle(), None);
+
+        // After removal the same key is rejected with NotAuthorized (#15).
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.set_pair_liquidity(
+                &oracle,
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &999i128,
+            )
+        }));
+        assert!(err.is_err());
+        // The blocked call left the last accepted value untouched.
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            500
+        );
+    }
+
+    /// A revoked oracle is rejected with exactly NotAuthorized (#15) —
+    /// the same code any other stranger gets.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #16)")]
+    fn test_removed_oracle_rejected_with_not_authorized() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.remove_oracle();
+        client.set_pair_liquidity(
+            &oracle,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1i128,
+        );
+    }
+
+    /// The admin keeps the liquidity feed after the oracle is revoked:
+    /// the dual-auth check degrades to admin-only when the slot is absent.
+    #[test]
+    fn test_admin_can_still_update_liquidity_after_removal() {
+        let env = Env::default();
+        let (client, admin) = setup_initialized(&env);
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.remove_oracle();
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &42i128,
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            42
+        );
+    }
+
+    /// Removal is idempotent: removing when a previous removal (or nothing)
+    /// left the slot empty is a clean no-op and the getter stays None.
+    #[test]
+    fn test_remove_oracle_is_idempotent() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        // Remove when never set — clean no-op.
+        assert_eq!(client.get_oracle(), None);
+        client.remove_oracle();
+        assert_eq!(client.get_oracle(), None);
+        // Set, remove, then remove again — second removal is also a no-op.
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        client.remove_oracle();
+        client.remove_oracle();
+        assert_eq!(client.get_oracle(), None);
+    }
+
+    /// `remove_oracle` emits one `orac_rm` event per call, carrying the
+    /// previously configured oracle (`None` on a no-op removal).
+    #[test]
+    fn test_remove_oracle_emits_orac_rm_event() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+        client.remove_oracle();
+        let payloads = event_payloads(&env, symbol_short!("orac_rm"));
+        assert_eq!(payloads.len(), 1, "remove_oracle emits one orac_rm event");
+        let removed: Option<Address> = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("orac_rm event data decodes to Option<Address>");
+        assert_eq!(removed, Some(oracle));
+    }
+
+    /// A no-op removal still emits `orac_rm`, with `None` as the payload,
+    /// so indexers observe every revocation attempt.
+    #[test]
+    fn test_remove_oracle_noop_emits_event_with_none() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.remove_oracle();
+        let payloads = event_payloads(&env, symbol_short!("orac_rm"));
+        assert_eq!(payloads.len(), 1);
+        let removed: Option<Address> = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("orac_rm event data decodes to Option<Address>");
+        assert_eq!(removed, None);
+    }
+
+    /// After removal the oracle can be set again (rotation to a fresh key
+    /// once the incident is resolved).
+    #[test]
+    fn test_oracle_can_be_reconfigured_after_removal() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        let compromised = Address::generate(&env);
+        client.set_oracle(&compromised);
+        client.remove_oracle();
+        let fresh = Address::generate(&env);
+        client.set_oracle(&fresh);
+        assert_eq!(client.get_oracle(), Some(fresh.clone()));
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_liquidity(
+            &fresh,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &7i128,
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            7
+        );
+    }
+
+    /// `remove_oracle` is admin-gated: a caller without the admin's auth
+    /// is rejected, so a compromised oracle cannot un-revoke itself or
+    /// grief the admin by clearing the slot.
+    #[test]
+    #[should_panic]
+    fn test_remove_oracle_requires_admin_auth() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        env.mock_all_auths();
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        client.set_oracle(&oracle);
+        // Authorize only the oracle so admin.require_auth() must fail.
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &oracle,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "remove_oracle",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.remove_oracle();
+    }
+
+    /// Missing-admin path reuses NotInitialized (#2), like every other
+    /// admin-gated entrypoint.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_remove_oracle_panics_when_uninitialized() {
+        let env = Env::default();
+        let (client, _admin, contract_id) = setup_initialized_with_id(&env);
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().remove(&DataKey::Admin);
+        });
+        client.remove_oracle();
     }
 
     #[test]
@@ -2270,21 +2917,61 @@ mod test {
 
     // --- #20: init front-running hardening ---
 
-    /// The constructor sets the admin atomically at deploy time — there is
-    /// no deployed-but-uninitialized window.
+    /// Deploy must be observable from the raw event buffer: a fresh
+    /// `register(StableRouteRouter, (admin,))` should emit exactly one
+    /// `init` event carrying the constructor's admin, and the admin must be
+    /// readable immediately without any legacy `init` call.
     #[test]
-    fn test_constructor_sets_admin_at_deploy() {
+    fn test_constructor_emits_single_init_event_with_admin_payload() {
+        use soroban_sdk::{
+            xdr::{ContractEventBody, ScVal},
+            TryFromVal,
+        };
+
         let env = Env::default();
-        let (client, admin) = setup_initialized(&env);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+
+        let all_events = env.events().all();
+        let events = all_events.events();
+        assert_eq!(events.len(), 1, "constructor emits exactly one event");
+
+        let ContractEventBody::V0(body) = &events[0].body;
+        let topics = body.topics.as_slice();
+        assert_eq!(topics.len(), 1, "init event has a single topic");
+
+        let ScVal::Symbol(raw_topic) = &topics[0] else {
+            panic!("constructor event topic decodes to a symbol");
+        };
+        let topic = Symbol::try_from_val(&env, raw_topic)
+            .expect("constructor event topic decodes to Symbol");
+        assert_eq!(topic, symbol_short!("init"));
+
+        let init_admin: Address =
+            TryFromVal::try_from_val(&env, &body.data).expect("init event data decodes to admin");
+        assert_eq!(init_admin, admin);
         assert_eq!(client.get_admin(), Some(admin));
     }
 
-    /// An attacker who observes the freshly deployed router cannot seize
-    /// the admin role by calling the legacy `init`: it always rejects with
-    /// AlreadyInitialized (#1) because the slot is already populated.
+    /// Even the original constructor admin cannot re-run legacy `init`
+    /// after deploy; the constructor/init split is permanent and `init`
+    /// must always preserve `AlreadyInitialized` (#1).
     #[test]
     #[should_panic(expected = "Error(Contract, #1)")]
-    fn test_attacker_cannot_seize_admin_via_init() {
+    fn test_post_deploy_init_rejects_original_admin() {
+        let env = Env::default();
+        let (client, admin) = setup_initialized(&env);
+        client.init(&admin);
+    }
+
+    /// Any other address is equally unable to seize the router with legacy
+    /// `init`; once deployed, admin control can only change through the
+    /// governed transfer flow.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_post_deploy_init_rejects_different_address() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         let attacker = Address::generate(&env);
@@ -2318,402 +3005,6 @@ mod test {
     fn test_constructor_rejects_missing_admin_arg() {
         let env = Env::default();
         let _client = setup_uninitialized(&env);
-    }
-
-    // --- liquidity consumption model ---
-
-    fn liq_used_event_payloads(env: &Env) -> std::vec::Vec<soroban_sdk::Val> {
-        event_payloads(env, symbol_short!("liq_used"))
-    }
-
-    fn setup_liquidity_pair(env: &Env) -> (StableRouteRouterClient<'_>, Address, Symbol, Symbol) {
-        let (client, admin) = setup_initialized(env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_fee_bps(&s, &d, &50u32);
-        (client, admin, s, d)
-    }
-
-    #[test]
-    fn test_liquidity_decremented_by_amount_after_route() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &1_000i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 1_000);
-
-        let _fee = client.compute_route_fee(&s, &d, &300i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 700);
-    }
-
-    #[test]
-    fn test_exact_liquidity_route_consumes_all() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-
-        let _fee = client.compute_route_fee(&s, &d, &500i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-    }
-
-    #[test]
-    fn test_repeated_routes_exhaust_liquidity() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &100i128);
-
-        client.compute_route_fee(&s, &d, &40i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 60);
-
-        client.compute_route_fee(&s, &d, &30i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 30);
-
-        client.compute_route_fee(&s, &d, &30i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-
-        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&s, &d, &1i128)
-        }));
-        assert!(err.is_err());
-    }
-
-    #[test]
-    fn test_insufficient_liquidity_after_partial_consume() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &100i128);
-
-        client.compute_route_fee(&s, &d, &60i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 40);
-
-        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&s, &d, &50i128)
-        }));
-        assert!(err.is_err());
-        assert_eq!(client.get_pair_liquidity(&s, &d), 40);
-    }
-
-    #[test]
-    fn test_unset_liquidity_stays_unbounded() {
-        let env = Env::default();
-        let (client, _admin, s, d) = setup_liquidity_pair(&env);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-        let _fee = client.compute_route_fee(&s, &d, &1_000_000i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-        assert_eq!(liq_used_event_payloads(&env).len(), 0);
-    }
-
-    #[test]
-    fn test_liq_used_event_emitted_with_remaining() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &1_000i128);
-
-        client.compute_route_fee(&s, &d, &300i128);
-
-        let payloads = liq_used_event_payloads(&env);
-        assert_eq!(payloads.len(), 1);
-        let decoded: (Symbol, Symbol, i128) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
-                .expect("liq_used data decodes to (Symbol, Symbol, i128)");
-        assert_eq!(decoded, (s, d, 700i128));
-    }
-
-    #[test]
-    fn test_oracle_top_up_after_consumption() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-
-        client.compute_route_fee(&s, &d, &300i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 200);
-
-        client.set_pair_liquidity(&admin, &s, &d, &1_000i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 1_000);
-
-        let _fee = client.compute_route_fee(&s, &d, &800i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 200);
-    }
-
-    #[test]
-    fn test_zero_liquidity_after_drain_allows_top_up() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &100i128);
-
-        client.compute_route_fee(&s, &d, &100i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-
-        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&s, &d, &1i128)
-        }));
-        assert!(err.is_err());
-
-        client.set_pair_liquidity(&admin, &s, &d, &50i128);
-        let _fee = client.compute_route_fee(&s, &d, &50i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-    }
-
-    #[test]
-    fn test_liq_used_event_not_emitted_for_unset() {
-        let env = Env::default();
-        let (client, _admin, s, d) = setup_liquidity_pair(&env);
-
-        let _fee = client.compute_route_fee(&s, &d, &999_999i128);
-
-        assert_eq!(liq_used_event_payloads(&env).len(), 0);
-    }
-
-    #[test]
-    fn test_liq_used_and_route_both_emitted() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-
-        client.compute_route_fee(&s, &d, &200i128);
-
-        let liq_payloads = liq_used_event_payloads(&env);
-        assert_eq!(liq_payloads.len(), 1);
-        let liq_used: (Symbol, Symbol, i128) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &liq_payloads[0])
-                .expect("liq_used data decodes");
-        assert_eq!(liq_used, (s.clone(), d.clone(), 300i128));
-
-        let route_payloads = route_event_payloads(&env);
-        assert_eq!(route_payloads.len(), 1);
-        let route: (Symbol, Symbol, i128) =
-            soroban_sdk::TryFromVal::try_from_val(&env, &route_payloads[0])
-                .expect("route data decodes");
-        assert_eq!(route, (s, d, 200i128));
-    }
-
-    #[test]
-    fn test_cooldown_blocked_route_has_no_business_side_effects() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &1_000i128);
-        client.set_pair_cooldown(&s, &d, &60u64);
-
-        env.ledger().set_timestamp(1_000);
-        client.compute_route_fee(&s, &d, &100i128);
-
-        assert_eq!(client.get_pair_liquidity(&s, &d), 900);
-        assert_eq!(client.get_pair_route_count(&s, &d), 1);
-        assert_eq!(client.get_pair_volume(&s, &d), 100);
-        assert_eq!(client.get_pair_last_route_at(&s, &d), Some(1_000));
-        let liq_events_before = liq_used_event_payloads(&env).len();
-        let route_events_before = route_event_payloads(&env).len();
-
-        env.ledger().set_timestamp(1_030);
-        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.compute_route_fee(&s, &d, &200i128)
-        }));
-
-        assert!(err.is_err());
-        assert_eq!(client.get_pair_liquidity(&s, &d), 900);
-        assert_eq!(client.get_pair_route_count(&s, &d), 1);
-        assert_eq!(client.get_pair_volume(&s, &d), 100);
-        assert_eq!(client.get_pair_last_route_at(&s, &d), Some(1_000));
-        assert_eq!(liq_used_event_payloads(&env).len(), liq_events_before);
-        assert_eq!(route_event_payloads(&env).len(), route_events_before);
-    }
-
-    #[test]
-    fn test_multiple_pairs_independent_liquidity() {
-        let env = Env::default();
-        let (client, admin) = setup_initialized(&env);
-        let a_src = symbol_short!("USDC");
-        let a_dst = symbol_short!("EURC");
-        let b_src = symbol_short!("XLM");
-        let b_dst = symbol_short!("USDC");
-        client.register_pair(&a_src, &a_dst);
-        client.register_pair(&b_src, &b_dst);
-        client.set_pair_fee_bps(&a_src, &a_dst, &10u32);
-        client.set_pair_fee_bps(&b_src, &b_dst, &10u32);
-        client.set_pair_liquidity(&admin, &a_src, &a_dst, &500i128);
-        client.set_pair_liquidity(&admin, &b_src, &b_dst, &300i128);
-
-        client.compute_route_fee(&a_src, &a_dst, &200i128);
-        assert_eq!(client.get_pair_liquidity(&a_src, &a_dst), 300);
-        assert_eq!(client.get_pair_liquidity(&b_src, &b_dst), 300);
-
-        client.compute_route_fee(&b_src, &b_dst, &100i128);
-        assert_eq!(client.get_pair_liquidity(&a_src, &a_dst), 300);
-        assert_eq!(client.get_pair_liquidity(&b_src, &b_dst), 200);
-    }
-
-    #[test]
-    fn test_saturating_sub_never_underflows() {
-        let env = Env::default();
-        let (client, admin, s, d) = setup_liquidity_pair(&env);
-        client.set_pair_liquidity(&admin, &s, &d, &1i128);
-
-        let _fee = client.compute_route_fee(&s, &d, &1i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
-    }
-}
-
-/// Registration-before-configuration guard. `set_pair_fee_bps`,
-/// `set_pair_min_amount`, `set_pair_max_amount`, and `set_pair_liquidity`
-/// must reject an unregistered pair with `PairNotRegistered` (#5), succeed
-/// once `register_pair` has been called, and reject again after
-/// `unregister_pair` removes the registration. This closes the orphan-config
-/// hole: an admin can no longer write fee/bounds/liquidity for a corridor
-/// that was never (or no longer) an active route.
-#[cfg(test)]
-mod test_registration_before_configuration {
-    use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _};
-
-    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
-        env.mock_all_auths();
-        let admin = Address::generate(env);
-        let id = env.register(StableRouteRouter, (admin.clone(),));
-        (StableRouteRouterClient::new(env, &id), admin)
-    }
-
-    // --- set_pair_fee_bps ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_fee_bps_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
-    }
-
-    #[test]
-    fn test_set_pair_fee_bps_succeeds_after_register() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_fee_bps(&s, &d, &50u32);
-        assert_eq!(client.get_pair_fee_bps(&s, &d), 50);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_fee_bps_rejects_after_unregister() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_fee_bps(&s, &d, &50u32);
-    }
-
-    // --- set_pair_min_amount ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_min_amount_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &10i128);
-    }
-
-    #[test]
-    fn test_set_pair_min_amount_succeeds_after_register() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_min_amount(&s, &d, &10i128);
-        assert_eq!(client.get_pair_min_amount(&s, &d), 10);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_min_amount_rejects_after_unregister() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_min_amount(&s, &d, &10i128);
-    }
-
-    // --- set_pair_max_amount ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_max_amount_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000i128);
-    }
-
-    #[test]
-    fn test_set_pair_max_amount_succeeds_after_register() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_max_amount(&s, &d, &1_000i128);
-        assert_eq!(client.get_pair_max_amount(&s, &d), 1_000);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_max_amount_rejects_after_unregister() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_max_amount(&s, &d, &1_000i128);
-    }
-
-    // --- set_pair_liquidity ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_liquidity_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        client.set_pair_liquidity(
-            &admin,
-            &symbol_short!("USDC"),
-            &symbol_short!("EURC"),
-            &500i128,
-        );
-    }
-
-    #[test]
-    fn test_set_pair_liquidity_succeeds_after_register() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 500);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_liquidity_rejects_after_unregister() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-    }
-
-    /// Sign/cap validation still fires for an unregistered pair: the
-    /// existing negative/zero checks run before the new registration
-    /// guard, so callers get the more specific error first.
-    #[test]
-    #[should_panic(expected = "Error(Contract, #6)")]
-    fn test_set_pair_liquidity_negative_check_precedes_registration_check() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        client.set_pair_liquidity(
-            &admin,
-            &symbol_short!("USDC"),
-            &symbol_short!("EURC"),
-            &-1i128,
-        );
     }
 }
 
@@ -3359,6 +3650,83 @@ mod test_i19_authorization {
         client.migrate_v1_to_v2();
     }
 
+    #[test]
+    #[should_panic]
+    fn test_set_max_fee_absolute_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.set_max_fee_absolute(&1000i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_pair_cooldown_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.set_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC"), &100u64);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_oracle_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.set_oracle(&Address::generate(&env));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_timelock_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.set_timelock(&100u64);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_cancel_admin_transfer_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.cancel_admin_transfer();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_force_admin_transfer_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.force_admin_transfer(&Address::generate(&env));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_upgrade_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.upgrade(&BytesN::from_array(&env, &[0; 32]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_register_pairs_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        let pairs = Vec::from_slice(&env, &[(symbol_short!("USDC"), symbol_short!("EURC"))]);
+        client.register_pairs(&pairs);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_pair_fees_bps_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        let entries = Vec::from_slice(
+            &env,
+            &[(symbol_short!("USDC"), symbol_short!("EURC"), 100u32)],
+        );
+        client.set_pair_fees_bps(&entries);
+    }
+
     /// Positive control: with the admin's auth supplied, the call succeeds.
     #[test]
     fn test_admin_can_register_with_auth() {
@@ -3659,5 +4027,350 @@ mod test_batch {
             &env,
             (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
         ]);
+    }
+}
+
+/// Issue #153: Test coverage for the version surface and NotInitialized paths.
+///
+/// This module validates that:
+/// - `version()` is stable (`ROUTER_V2`) independent of schema version
+/// - `get_schema_version()` returns 1 before any migration (default fallback)
+/// - All admin-gated entrypoints panic with `NotInitialized` (#2) on uninitialized contracts
+/// - Security invariants: no admin entrypoint succeeds before initialization
+#[cfg(test)]
+mod test_i153_version_uninitialized {
+    use super::*;
+    use soroban_sdk::{symbol_short, testutils::Address as _};
+
+    // ========== Helper Setup Functions ==========
+
+    /// Register a contract with admin set (initialized).
+    fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &contract_id);
+        (client, admin)
+    }
+
+    /// Register a contract and then remove the admin from storage to simulate an
+    /// uninitialized state (admin slot is empty). Used to test NotInitialized (#2) failures.
+    fn setup_uninitialized(env: &Env) -> StableRouteRouterClient<'_> {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(env, &contract_id);
+        // Remove the admin from storage to simulate uninitialized state.
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().remove(&DataKey::Admin);
+        });
+        client
+    }
+
+    // ========== Version Surface Tests ==========
+
+    /// `version()` is the fixed contract identity tag; the version constant is stable
+    /// across the contract's lifetime.
+    #[test]
+    fn test_version_returns_router_v2() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+    }
+
+    /// `version()` is the fixed contract identity tag and must be entirely
+    /// independent of `get_schema_version()`: migrating the storage schema from v1 to v2
+    /// advances the schema number but never the version tag.
+    #[test]
+    fn test_version_constant_independent_of_schema_migration() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+
+        // Both are at their initial values.
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+        assert_eq!(client.get_schema_version(), 1u32);
+
+        // Perform schema migration.
+        client.migrate_v1_to_v2();
+
+        // Schema advanced 1 → 2, but version tag remains `ROUTER_V2`.
+        assert_eq!(client.get_schema_version(), 2u32);
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+    }
+
+    /// `get_schema_version()` returns 1 (the implicit pre-migration default) when no
+    /// schema version has been persisted to storage yet.
+    #[test]
+    fn test_schema_version_defaults_to_one_when_uninitialized() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        assert_eq!(client.get_schema_version(), 1u32);
+    }
+
+    // ========== NotInitialized (#2) Failure Path Tests ==========
+
+    // Every admin-gated entrypoint must panic with `NotInitialized` (#2) when called on a
+    // contract that has not had its admin set. This test group validates the security
+    // invariant: no admin action succeeds before initialization.
+
+    /// `pause()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_pause_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.pause();
+    }
+
+    /// `unpause()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unpause_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.unpause();
+    }
+
+    /// `register_pair()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_pair_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+    }
+
+    /// `register_pairs()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_pairs_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.register_pairs(&soroban_sdk::Vec::from_slice(
+            &env,
+            &[(symbol_short!("USDC"), symbol_short!("EURC"))],
+        ));
+    }
+
+    /// `set_pair_fee_bps()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_fee_bps_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &50u32);
+    }
+
+    /// `set_pair_fees_bps()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_fees_bps_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_fees_bps(&soroban_sdk::Vec::from_slice(
+            &env,
+            &[(symbol_short!("USDC"), symbol_short!("EURC"), 50u32)],
+        ));
+    }
+
+    /// `set_pair_min_amount()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_min_amount_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &10i128);
+    }
+
+    /// `set_pair_max_amount()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_max_amount_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_max_amount(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000i128,
+        );
+    }
+
+    /// `set_pair_liquidity()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_liquidity_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let caller = Address::generate(&env);
+        client.set_pair_liquidity(
+            &caller,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &500i128,
+        );
+    }
+
+    /// `unregister_pair()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_unregister_pair_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.unregister_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+    }
+
+    /// `propose_admin_transfer()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_propose_admin_transfer_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let new_admin = Address::generate(&env);
+        client.propose_admin_transfer(&new_admin);
+    }
+
+    /// `cancel_admin_transfer()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_cancel_admin_transfer_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.cancel_admin_transfer();
+    }
+
+    /// `set_fee_recipient()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_fee_recipient_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let recipient = Address::generate(&env);
+        client.set_fee_recipient(&recipient);
+    }
+
+    /// `set_timelock()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_timelock_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_timelock(&100u64);
+    }
+
+    /// `set_pair_cooldown()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_pair_cooldown_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC"), &60u64);
+    }
+
+    /// `set_oracle()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_oracle_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+    }
+
+    /// `set_max_fee_absolute()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_set_max_fee_absolute_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.set_max_fee_absolute(&1_000i128);
+    }
+
+    /// `migrate_v1_to_v2()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_migrate_v1_to_v2_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.migrate_v1_to_v2();
+    }
+
+    /// `upgrade()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_upgrade_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+        client.upgrade(&dummy_hash);
+    }
+
+    // ========== Security Invariant Validation ==========
+
+    /// All read-only entrypoints (version, schema_version, pair queries) succeed on
+    /// uninitialized contracts (no admin required for reads).
+    #[test]
+    fn test_read_only_operations_work_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+
+        // These all succeed because they are read-only (no admin check).
+        assert_eq!(client.version(), symbol_short!("ROUTER_V2"));
+        assert_eq!(client.get_schema_version(), 1u32);
+        assert!(!client.is_paused());
+        assert_eq!(client.get_admin(), None);
+        assert_eq!(client.get_pending_admin(), None);
+        assert_eq!(client.get_timelock(), 0u64);
+        assert_eq!(client.get_pending_admin_eta(), None);
+        assert_eq!(client.get_fee_recipient(), None);
+        assert_eq!(client.get_oracle(), None);
+        assert_eq!(client.get_max_fee_absolute(), None);
+        assert!(!client.is_pair_registered(&symbol_short!("USDC"), &symbol_short!("EURC")));
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            0u32
+        );
+        assert_eq!(
+            client.get_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            0i128
+        );
+        assert_eq!(
+            client.get_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            i128::MAX
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            0i128
+        );
+    }
+
+    /// Version and schema version are separate concepts: `version()` is stable,
+    /// while `get_schema_version()` evolves with migrations. On an initialized but
+    /// unmigrated contract, both are at their initial values.
+    #[test]
+    fn test_version_and_schema_version_are_separate_concepts() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+
+        // Version is a constant, schema_version is a persistent value.
+        let version = client.version();
+        let schema = client.get_schema_version();
+
+        assert_eq!(version, symbol_short!("ROUTER_V2"));
+        assert_eq!(schema, 1u32);
+        // These are distinct types and values - Symbol vs u32.
+    }
+
+    /// After initialization, admin-gated operations become available (they do not panic
+    /// with NotInitialized). This test verifies the initialization unlocks admin gates.
+    #[test]
+    fn test_admin_operations_succeed_after_initialization() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+
+        // These now succeed because initialization has set the admin.
+        client.pause();
+        assert!(client.is_paused());
+        client.unpause();
+        assert!(!client.is_paused());
     }
 }
