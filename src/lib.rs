@@ -4368,3 +4368,253 @@ mod test_i153_version_uninitialized {
         assert!(!client.is_paused());
     }
 }
+
+/// Tests for the unbounded-liquidity sentinel path in `compute_route_fee`.
+///
+/// `compute_route_fee` treats an absent `PairLiquidity` slot as `i128::MAX`
+/// (the "unbounded" sentinel). In that branch it MUST:
+///   1. skip the `saturating_sub` debit — the slot stays absent, never
+///      written as `i128::MAX`;
+///   2. emit zero `liq_used` events — the debit event is gated behind the
+///      same `liquidity != i128::MAX` check as the write.
+///
+/// A freshly-registered pair is always in this state, so a regression in
+/// either invariant would silently affect every newly-added corridor without
+/// the existing test suite catching it.
+#[cfg(test)]
+mod test_unbounded_liquidity_sentinel {
+    use super::*;
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Events},
+        TryFromVal,
+        xdr::{ContractEventBody, ScVal},
+        Val,
+    };
+
+    // ---------- helpers -------------------------------------------------------
+
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &contract_id);
+        (client, admin)
+    }
+
+    /// Scan all contract events and return the decoded `data` payloads of
+    /// every event whose single-symbol topic matches `topic`.
+    fn liq_used_payloads(env: &Env) -> std::vec::Vec<Val> {
+        let topic = symbol_short!("liq_used");
+        env.events()
+            .all()
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let ContractEventBody::V0(body) = &event.body;
+                let topics = body.topics.as_slice();
+                if topics.len() != 1 {
+                    return None;
+                }
+                let ScVal::Symbol(raw) = &topics[0] else {
+                    return None;
+                };
+                let actual =
+                    Symbol::try_from_val(env, raw).expect("event topic decodes to Symbol");
+                if actual == topic {
+                    Some(Val::try_from_val(env, &body.data).expect("event data decodes"))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    // ---------- primary invariant tests ---------------------------------------
+
+    /// An unbounded pair (registered, no `set_pair_liquidity` call) must not
+    /// emit a `liq_used` event after `compute_route_fee` succeeds.
+    ///
+    /// The sentinel branch `if liquidity != i128::MAX` must be `false` when
+    /// the slot is absent, so the event block is never reached.
+    #[test]
+    fn test_unbounded_pair_emits_no_liq_used_event() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let (client, _admin) = setup(&env);
+        client.register_pair(&src, &dest);
+        // Deliberately do NOT call `set_pair_liquidity`.
+
+        client.compute_route_fee(&src, &dest, &1_000_000_i128);
+
+        assert_eq!(
+            liq_used_payloads(&env).len(),
+            0,
+            "unbounded pair must emit no liq_used event; sentinel branch skips the debit block"
+        );
+    }
+
+    /// An unbounded pair must leave the `PairLiquidity` slot absent after
+    /// `compute_route_fee` — the sentinel value `i128::MAX` must never be
+    /// materialised in persistent storage.
+    ///
+    /// `get_pair_liquidity` returns `0` for an absent slot (its own
+    /// `unwrap_or(0)` default).  We verify the slot is genuinely absent by
+    /// confirming the getter still returns `0` both before and after the route.
+    #[test]
+    fn test_unbounded_pair_does_not_write_sentinel_to_storage() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let (client, _admin) = setup(&env);
+        client.register_pair(&src, &dest);
+
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            0,
+            "before any route the absent PairLiquidity slot reads as 0"
+        );
+
+        client.compute_route_fee(&src, &dest, &500_000_i128);
+
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            0,
+            "unbounded pair must not write i128::MAX (or any value) to PairLiquidity"
+        );
+    }
+
+    /// Multiple routes on an unbounded pair still emit zero `liq_used`
+    /// events across all calls — the sentinel path holds on every invocation,
+    /// not just the first.
+    #[test]
+    fn test_unbounded_pair_emits_no_liq_used_events_across_multiple_routes() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let (client, _admin) = setup(&env);
+        client.register_pair(&src, &dest);
+
+        client.compute_route_fee(&src, &dest, &1_000_000_i128);
+        client.compute_route_fee(&src, &dest, &2_000_000_i128);
+        client.compute_route_fee(&src, &dest, &500_000_i128);
+
+        assert_eq!(
+            liq_used_payloads(&env).len(),
+            0,
+            "unbounded pair must emit no liq_used events even across multiple routes"
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            0,
+            "slot must remain absent (reads as 0) after multiple unbounded routes"
+        );
+    }
+
+    // ---------- contrast / positive tests ------------------------------------
+
+    /// Contrast: a bounded pair (with an explicit `set_pair_liquidity`) MUST
+    /// emit exactly one `liq_used` event per route and MUST decrement the
+    /// stored balance.
+    ///
+    /// This proves the sentinel tests above are not vacuously satisfied by
+    /// the debit block being dead code — the block runs exactly when it should.
+    #[test]
+    fn test_bounded_pair_emits_liq_used_event_and_debits() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let (client, admin) = setup(&env);
+        client.register_pair(&src, &dest);
+
+        let initial: i128 = 5_000_000;
+        client.set_pair_liquidity(&admin, &src, &dest, &initial);
+        assert_eq!(client.get_pair_liquidity(&src, &dest), initial);
+
+        let amount: i128 = 1_000_000;
+        client.compute_route_fee(&src, &dest, &amount);
+
+        let payloads = liq_used_payloads(&env);
+        assert_eq!(
+            payloads.len(),
+            1,
+            "bounded pair must emit exactly one liq_used event per route"
+        );
+        let decoded: (Symbol, Symbol, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+                .expect("liq_used data decodes to (Symbol, Symbol, i128)");
+        let expected_remaining = initial - amount; // 4_000_000
+        assert_eq!(
+            decoded,
+            (src.clone(), dest.clone(), expected_remaining),
+            "liq_used event must carry (source, destination, remaining_liquidity)"
+        );
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            expected_remaining,
+            "PairLiquidity slot must be decremented by the routed amount"
+        );
+    }
+
+    /// Multiple routes on a bounded pair each emit one `liq_used` event, and
+    /// the balance decrements cumulatively.  Asserts the event after each
+    /// invocation individually because Soroban's test environment surfaces
+    /// events per-call, not accumulated across calls.
+    #[test]
+    fn test_bounded_pair_liq_used_events_accumulate_correctly() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let (client, admin) = setup(&env);
+        client.register_pair(&src, &dest);
+        client.set_pair_liquidity(&admin, &src, &dest, &10_000_000_i128);
+
+        // First route: debit 1_000_000, remaining 9_000_000.
+        client.compute_route_fee(&src, &dest, &1_000_000_i128);
+        assert_eq!(
+            liq_used_payloads(&env).len(),
+            1,
+            "first route must emit exactly one liq_used event"
+        );
+        assert_eq!(client.get_pair_liquidity(&src, &dest), 9_000_000_i128);
+
+        // Second route: debit 2_000_000, remaining 7_000_000.
+        client.compute_route_fee(&src, &dest, &2_000_000_i128);
+        assert_eq!(
+            liq_used_payloads(&env).len(),
+            1,
+            "second route must also emit exactly one liq_used event"
+        );
+        // Cumulative debit: 10_000_000 - 1_000_000 - 2_000_000 = 7_000_000.
+        assert_eq!(client.get_pair_liquidity(&src, &dest), 7_000_000_i128);
+    }
+
+    // ---------- prerequisite validation ---------------------------------------
+
+    /// `get_pair_liquidity` returns `0` for an absent slot and the real
+    /// balance for a written slot.  Validates the probe used in the sentinel
+    /// tests: if the absent-default were non-zero those assertions would be
+    /// untrustworthy.
+    #[test]
+    fn test_get_pair_liquidity_absent_default_is_zero() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        client.register_pair(&src, &dest);
+
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            0,
+            "absent PairLiquidity slot must read as 0"
+        );
+
+        client.set_pair_liquidity(&admin, &src, &dest, &42_000_i128);
+        assert_eq!(
+            client.get_pair_liquidity(&src, &dest),
+            42_000_i128,
+            "written PairLiquidity slot must read back as the stored value"
+        );
+    }
+}
