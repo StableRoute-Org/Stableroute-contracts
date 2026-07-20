@@ -758,6 +758,7 @@ impl StableRouteRouter {
         if cooldown_secs > MAX_COOLDOWN_SECS {
             panic_with_error!(&env, RouterError::CooldownTooLarge);
         }
+        Self::require_pair_registered(&env, &source, &destination);
         env.storage().persistent().set(
             &DataKey::PairCooldown(source.clone(), destination.clone()),
             &cooldown_secs,
@@ -2190,7 +2191,10 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        // Config slots (fee, min, max, liquidity, cooldown) are cleared
+        // by `unregister_pair` → `clear_pair_config`, so the fee resets
+        // to the default of 0.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2200,7 +2204,9 @@ mod test {
         );
 
         assert!(client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        // After re-register the fee is still the default (0) because
+        // config was cleared on unregister.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
     }
 
     /// Documents the current, unchanged behavior: `unregister_pair` alone
@@ -2773,7 +2779,7 @@ mod test {
 
     /// Scan the test-host's current contract events and return the decoded
     /// `data` payloads of every event whose single topic matches `topic`.
-    fn event_payloads(env: &Env, topic: Symbol) -> std::vec::Vec<soroban_sdk::Val> {
+    pub(crate) fn event_payloads(env: &Env, topic: Symbol) -> std::vec::Vec<soroban_sdk::Val> {
         use soroban_sdk::{
             xdr::{ContractEventBody, ScVal},
             TryFromVal, Val,
@@ -4366,5 +4372,260 @@ mod test_i153_version_uninitialized {
         assert!(client.is_paused());
         client.unpause();
         assert!(!client.is_paused());
+    }
+}
+
+/// Issue #165: per-pair cooldown rate limit using ledger timestamp control.
+///
+/// Covers:
+/// - `set_pair_cooldown` rejects cooldown above `MAX_COOLDOWN_SECS` and requires
+///   a registered pair (consistent with other config setters)
+/// - `get_pair_cooldown` defaults to 0 (disabled)
+/// - Cooldown 0 (disabled) allows back-to-back routes
+/// - First route always passes regardless of cooldown setting
+/// - Cooldown blocks a second route within the window (`RouteCooldownActive`)
+/// - Cooldown allows a route after the window elapses (ledger timestamp advance)
+/// - Cooldown is per-pair — independent cooldown states for different pairs
+/// - `set_pair_cooldown` emits a `cd_set` event
+/// - `compute_route_fee` stamps `PairLastRouteAt` which the cooldown gate reads
+#[cfg(test)]
+mod test_i165_cooldown_rate_limit {
+    use super::*;
+    use crate::test::event_payloads;
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Ledger},
+    };
+
+    fn setup_pair(env: &Env) -> (StableRouteRouterClient<'_>, Symbol, Symbol) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(env, &id);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        (client, src, dst)
+    }
+
+    // --- set_pair_cooldown validation ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #20)")]
+    fn test_set_pair_cooldown_rejects_above_max() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &(MAX_COOLDOWN_SECS + 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_cooldown_rejects_unregistered_pair() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+        client.set_pair_cooldown(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &60u64,
+        );
+    }
+
+    // --- get_pair_cooldown defaults ---
+
+    #[test]
+    fn test_get_pair_cooldown_defaults_to_zero() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        assert_eq!(client.get_pair_cooldown(&src, &dst), 0);
+    }
+
+    #[test]
+    fn test_get_pair_cooldown_after_set() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &120u64);
+        assert_eq!(client.get_pair_cooldown(&src, &dst), 120);
+    }
+
+    // --- cooldown disabled (0) allows back-to-back routes ---
+
+    #[test]
+    fn test_cooldown_zero_allows_immediate_reroute() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_fee_bps(&src, &dst, &10u32);
+        // Cooldown defaults to 0 (disabled).
+        let fee1 = client.compute_route_fee(&src, &dst, &1_000i128);
+        let fee2 = client.compute_route_fee(&src, &dst, &1_000i128);
+        assert_eq!(fee1, fee2);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
+
+    // --- first route always passes ---
+
+    #[test]
+    fn test_first_route_passes_with_cooldown_set() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &3600u64);
+        // No prior route — no last_route_at timestamp — first call passes.
+        assert_eq!(
+            client.compute_route_fee(&src, &dst, &500i128),
+            0
+        );
+    }
+
+    // --- cooldown blocks immediate second route ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_cooldown_blocks_second_route_within_window() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        // First route succeeds, stamping last_route_at = 1_000.
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Second route at same timestamp (t = 1_000) — cooldown not elapsed.
+        client.compute_route_fee(&src, &dst, &500i128);
+    }
+
+    // --- cooldown allows route after window elapses ---
+
+    #[test]
+    fn test_cooldown_allows_route_after_window_elapses() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        // First route at t = 1_000.
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Advance past the cooldown window.
+        env.ledger().set_timestamp(1_100);
+        // Second route at t = 1_100 — exactly at last + cooldown.
+        let fee = client.compute_route_fee(&src, &dst, &500i128);
+        assert_eq!(fee, 0);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
+
+    #[test]
+    fn test_cooldown_allows_route_well_after_window() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &100u64);
+        client.compute_route_fee(&src, &dst, &500i128);
+        // Advance far beyond the cooldown.
+        env.ledger().set_timestamp(9_999);
+        let fee = client.compute_route_fee(&src, &dst, &500i128);
+        assert_eq!(fee, 0);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
+    }
+
+    // --- cooldown is per-pair (independent state) ---
+
+    #[test]
+    fn test_cooldown_is_per_pair_independent() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+
+        let src_a = symbol_short!("USDC");
+        let dst_a = symbol_short!("EURC");
+        let src_b = symbol_short!("XLM");
+        let dst_b = symbol_short!("USDC");
+
+        client.register_pair(&src_a, &dst_a);
+        client.register_pair(&src_b, &dst_b);
+        client.set_pair_cooldown(&src_a, &dst_a, &200u64);
+        client.set_pair_cooldown(&src_b, &dst_b, &200u64);
+
+        // Route pair A at t = 1_000.
+        client.compute_route_fee(&src_a, &dst_a, &100i128);
+        // Route pair B at t = 1_000 (different pair, independent cooldown).
+        client.compute_route_fee(&src_b, &dst_b, &100i128);
+
+        // Both should have last_route_at = 1_000.
+        assert_eq!(client.get_pair_last_route_at(&src_a, &dst_a), Some(1_000));
+        assert_eq!(client.get_pair_last_route_at(&src_b, &dst_b), Some(1_000));
+
+        // Advance by 100 — not enough for pair A (cooldown 200), but
+        // we can verify pair B also blocked at the same timestamp.
+        env.ledger().set_timestamp(1_100);
+        let err_a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src_a, &dst_a, &100i128);
+        }));
+        assert!(err_a.is_err(), "pair A should still be in cooldown");
+
+        let err_b = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src_b, &dst_b, &100i128);
+        }));
+        assert!(err_b.is_err(), "pair B should still be in cooldown");
+
+        // Advance to t = 1_200 — exactly at last + cooldown for both.
+        env.ledger().set_timestamp(1_200);
+        client.compute_route_fee(&src_a, &dst_a, &200i128);
+        client.compute_route_fee(&src_b, &dst_b, &200i128);
+        assert_eq!(client.get_pair_route_count(&src_a, &dst_a), 2);
+        assert_eq!(client.get_pair_route_count(&src_b, &dst_b), 2);
+    }
+
+    // --- set_pair_cooldown emits cd_set event ---
+
+    #[test]
+    fn test_set_pair_cooldown_emits_event() {
+        let env = Env::default();
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &300u64);
+        let payloads = event_payloads(&env, symbol_short!("cd_set"));
+        assert_eq!(payloads.len(), 1, "set_pair_cooldown emits exactly one cd_set event");
+        let decoded: (Symbol, Symbol, u64) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+                .expect("cd_set event data decodes to (Symbol, Symbol, u64)");
+        assert_eq!(decoded, (src, dst, 300u64));
+    }
+
+    // --- compute_route_fee stamps last_route_at after route ---
+
+    #[test]
+    fn test_cooldown_stamps_last_route_at() {
+        let env = Env::default();
+        env.ledger().set_timestamp(42_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &500u64);
+        assert_eq!(client.get_pair_last_route_at(&src, &dst), None);
+        client.compute_route_fee(&src, &dst, &1_000i128);
+        assert_eq!(
+            client.get_pair_last_route_at(&src, &dst),
+            Some(42_000)
+        );
+    }
+
+    // --- cooldown respects exact boundary (last + cooldown == timestamp) ---
+
+    #[test]
+    fn test_cooldown_boundary_at_last_plus_cooldown() {
+        let env = Env::default();
+        env.ledger().set_timestamp(5_000);
+        let (client, src, dst) = setup_pair(&env);
+        client.set_pair_cooldown(&src, &dst, &300u64);
+        client.compute_route_fee(&src, &dst, &100i128);
+        // At t = 5_299, still in cooldown (5_000 + 300 = 5_300).
+        env.ledger().set_timestamp(5_299);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.compute_route_fee(&src, &dst, &100i128);
+        }));
+        assert!(err.is_err(), "should be blocked at t = last + cooldown - 1");
+
+        // At t = 5_300, exactly at the boundary: allowed.
+        env.ledger().set_timestamp(5_300);
+        client.compute_route_fee(&src, &dst, &100i128);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 2);
     }
 }
