@@ -1431,6 +1431,24 @@ mod test {
             .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
     }
 
+    /// Mirrors `apply_fee_cap` — apply MaxFeeAbsolute if set.
+    fn apply_fee_cap_mirror(fee: i128, max_fee_absolute: Option<i128>) -> i128 {
+        match max_fee_absolute {
+            Some(cap) if cap >= 0 => fee.min(cap),
+            _ => fee,
+        }
+    }
+
+    /// Pure fee math extracted from `compute_route_fee` for property testing
+    /// without needing a full Soroban environment per iteration.
+    fn compute_fee_pure(amount: i128, fee_bps: u32, max_fee_absolute: Option<i128>) -> i128 {
+        let fee = amount
+            .checked_mul(fee_bps as i128)
+            .map(|n| n / BPS_DENOMINATOR)
+            .unwrap_or(0);
+        apply_fee_cap_mirror(fee, max_fee_absolute)
+    }
+
     proptest! {
         // Fixed case count keeps CI deterministic and fast.
         #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
@@ -1490,6 +1508,56 @@ mod test {
             );
             prop_assert_eq!(quoted_fee, computed_fee);
             prop_assert_eq!(quoted_fee + net, amount);
+        }
+
+        #[test]
+        fn prop_fee_never_exceeds_amount(
+            amount in 1_i128..=i128::MAX,
+            fee_bps in 0_u32..=MAX_FEE_BPS,
+        ) {
+            let env = Env::default();
+            let client = setup_pair_with_fee(&env, fee_bps);
+            let fee = client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &amount,
+            );
+            prop_assert!(fee >= 0);
+            prop_assert!(fee <= amount);
+        }
+
+        #[test]
+        fn prop_overflow_fallback_is_zero(
+            amount in (i128::MAX / MAX_FEE_BPS as i128 + 1)..=i128::MAX,
+            fee_bps in 1_u32..=MAX_FEE_BPS,
+        ) {
+            // checked_mul must return None here → fee falls back to 0
+            let overflows = amount.checked_mul(fee_bps as i128).is_none();
+            prop_assume!(overflows);
+
+            let env = Env::default();
+            let client = setup_pair_with_fee(&env, fee_bps);
+            let fee = client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &amount,
+            );
+            prop_assert_eq!(fee, 0, "overflow fallback must be 0");
+            prop_assert!(fee <= amount, "fallback fee must not exceed amount");
+        }
+
+        #[test]
+        fn prop_zero_bps_yields_zero_fee(
+            amount in 1_i128..=i128::MAX,
+        ) {
+            let env = Env::default();
+            let client = setup_pair_with_fee(&env, 0);
+            let fee = client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &amount,
+            );
+            prop_assert_eq!(fee, 0, "zero fee_bps must produce zero fee");
         }
     }
 
