@@ -177,6 +177,17 @@ On every push/PR to `main`, GitHub Actions runs:
 
 Ensure these pass locally before pushing.
 
+## Changelog
+
+This project follows the
+[Keep a Changelog](https://keepachangelog.com/)
+format.
+
+All user-visible changes should be documented in
+`CHANGELOG.md`.
+
+Every ABI-affecting pull request should include an
+appropriate changelog entry.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contract conventions (error

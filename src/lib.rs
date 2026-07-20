@@ -1004,7 +1004,8 @@ impl StableRouteRouter {
     /// those operational-history slots are tracked separately from live pair configuration.
     fn clear_pair_config(env: &Env, source: Symbol, destination: Symbol) {
         let storage = env.storage().persistent();
-        storage.remove(&DataKey::PairFeeBps(source.clone(), destination.clone()));
+    
+        // Preserve PairFeeBps so it is restored when the pair is re-registered.
         storage.remove(&DataKey::PairMinAmount(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairMaxAmount(source.clone(), destination.clone()));
         storage.remove(&DataKey::PairLiquidity(source.clone(), destination.clone()));
