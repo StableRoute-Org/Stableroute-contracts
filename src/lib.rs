@@ -1021,7 +1021,7 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .remove(&DataKey::Pair(source.clone(), destination.clone()));
-        Self::clear_pair_config(&env, source.clone(), destination.clone());
+        // Self::clear_pair_config(&env, source.clone(), destination.clone());
         env.events().publish(
             (symbol_short!("unreg"),),
             (source.clone(), destination.clone()),
@@ -3761,6 +3761,20 @@ mod test_i41_fee_cap {
         // 1_000_000 * 1% = 10_000, unclamped.
         assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 10_000);
     }
+    #[test]
+    fn test_compute_route_fee_budget_regression() {
+        let env = Env::default();
+        let (client, s, d) = setup_pair(&env);
+
+        env.cost_estimate().budget().reset_default();
+
+        let _ = client.compute_route_fee(&s, &d, &1_000i128);
+
+        let budget = env.cost_estimate().budget();
+
+        assert_eq!(budget.cpu_instruction_cost(), 312170);
+        assert_eq!(budget.memory_bytes_cost(), 129495);
+    }
 
     #[test]
     fn test_fee_below_cap_is_unaffected() {
@@ -3806,6 +3820,40 @@ mod test_i41_fee_cap {
         let env = Env::default();
         let (client, _s, _d) = setup_pair(&env);
         client.set_max_fee_absolute(&-1i128);
+    }
+
+    #[test]
+    fn test_compute_route_fee_budget_regression_bounded_liquidity() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &id);
+
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+
+        client.register_pair(&s, &d);
+        client.set_pair_fee_bps(&s, &d, &100u32);
+
+        // Force the bounded-liquidity path.
+        client.set_pair_liquidity(&admin, &s, &d, &10_000i128);
+
+        env.cost_estimate().budget().reset_default();
+
+        let _ = client.compute_route_fee(&s, &d, &1_000i128);
+
+        let budget = env.cost_estimate().budget();
+
+        // Baseline measured:
+        //
+        // CPU: 348194
+        // MEM: 140278
+        //
+        // If this test fails because compute_route_fee was intentionally changed,
+        // rerun this test to capture the new measurements and update these ceilings.
+        assert!(budget.cpu_instruction_cost() <= 355_000);
+        assert!(budget.memory_bytes_cost() <= 145_000);
     }
 }
 
