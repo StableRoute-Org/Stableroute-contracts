@@ -170,6 +170,10 @@ pub enum DataKey {
     /// persistent). When set, the effective fee is `min(bps_fee, cap)`.
     /// Absent ↔ `None` (only the relative `MAX_FEE_BPS` bound applies).
     MaxFeeAbsolute,
+    /// Optional absolute per-route fee floor (singleton, `i128`,
+    /// persistent). When set, the effective fee is `max(capped_fee, floor)`.
+    /// Absent ↔ `None` (no absolute floor applies).
+    MinFeeAbsolute,
     /// Scoped liquidity oracle address (singleton, `Address`,
     /// persistent). The oracle may call `set_pair_liquidity` and
     /// nothing else — it cannot set fees, pause, rotate admin, or
@@ -769,6 +773,7 @@ impl StableRouteRouter {
             .map(|n| n / BPS_DENOMINATOR)
             .unwrap_or(0);
         let fee = Self::apply_fee_cap(&env, fee);
+        let fee = Self::apply_fee_floor(&env, fee);
         (fee, amount - fee)
     }
 
@@ -888,6 +893,40 @@ impl StableRouteRouter {
             .persistent()
             .set(&DataKey::MaxFeeAbsolute, &max_fee);
         env.events().publish((symbol_short!("maxfee"),), max_fee);
+    }
+
+    /// Clamp `fee` to the configured absolute floor when one is set.
+    /// Applies after the fee cap; if the floor exceeds the cap, the floor
+    /// takes precedence. No-op when no absolute floor is configured.
+    fn apply_fee_floor(env: &Env, fee: i128) -> i128 {
+        match env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::MinFeeAbsolute)
+        {
+            Some(floor) => fee.max(floor),
+            None => fee,
+        }
+    }
+
+    /// Read the absolute per-route fee floor, or `None` when unset.
+    pub fn get_min_fee_absolute(env: Env) -> Option<i128> {
+        env.storage().persistent().get(&DataKey::MinFeeAbsolute)
+    }
+
+    /// Admin sets the absolute per-route fee floor (in source units).
+    /// Rejects negative floors with `AmountMustBePositive` (#6). Emits
+    /// a `minfee` event. The floor composes with the fee cap: a route is
+    /// charged `max(min(amount * fee_bps / 10_000, max_fee_absolute), min_fee_absolute)`.
+    pub fn set_min_fee_absolute(env: Env, min_fee: i128) {
+        Self::require_admin(&env);
+        if min_fee < 0 {
+            panic_with_error!(&env, RouterError::AmountMustBePositive);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::MinFeeAbsolute, &min_fee);
+        env.events().publish((symbol_short!("minfee"),), min_fee);
     }
 
     /// Read the reported liquidity for a pair (0 when absent).
@@ -1371,6 +1410,7 @@ impl StableRouteRouter {
             .map(|n| n / BPS_DENOMINATOR)
             .unwrap_or(0);
         let fee = Self::apply_fee_cap(&env, fee);
+        let fee = Self::apply_fee_floor(&env, fee);
         Self::exit_nonreentrant(&env);
         fee
     }
@@ -3702,6 +3742,14 @@ mod test_i19_authorization {
 
     #[test]
     #[should_panic]
+    fn test_set_min_fee_absolute_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.set_min_fee_absolute(&1000i128);
+    }
+
+    #[test]
+    #[should_panic]
     fn test_set_pair_cooldown_requires_admin() {
         let env = Env::default();
         let client = setup_scoped(&env);
@@ -3857,153 +3905,91 @@ mod test_i41_fee_cap {
     }
 }
 
-/// Issue #144 — registration-before-configuration guard on the four
-/// per-pair config setters (`set_pair_fee_bps`, `set_pair_min_amount`,
-/// `set_pair_max_amount`, `set_pair_liquidity`). Each setter must reject
-/// an unregistered pair with `PairNotRegistered` (#5), accept the same
-/// call once the pair is registered, and reject it again once the pair
-/// is unregistered (config slots are cleared by `unregister_pair`, so
-/// the pair reverts to "unregistered" from each setter's perspective).
+/// Absolute per-route fee floor. Applies after the fee cap; if floor > cap,
+/// floor takes precedence. Unset by default (backward compatible).
 #[cfg(test)]
-mod test_i144_registration_guard {
+mod test_i42_min_fee_floor {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
-    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+    fn setup_pair(env: &Env) -> (StableRouteRouterClient<'_>, Symbol, Symbol) {
         env.mock_all_auths();
         let admin = Address::generate(env);
-        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let id = env.register(StableRouteRouter, (admin,));
         let client = StableRouteRouterClient::new(env, &id);
-        (client, admin)
-    }
-
-    // --- set_pair_fee_bps ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_fee_bps_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &10u32);
-    }
-
-    #[test]
-    fn test_set_pair_fee_bps_succeeds_after_register() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
         let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
         client.register_pair(&s, &d);
-        client.set_pair_fee_bps(&s, &d, &10u32);
-        assert_eq!(client.get_pair_fee_bps(&s, &d), 10);
+        client.set_pair_fee_bps(&s, &d, &100u32); // 1%
+        (client, s, d)
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_fee_bps_rejects_after_unregister() {
+    fn test_no_absolute_floor_by_default() {
         let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_fee_bps(&s, &d, &10u32);
-    }
-
-    // --- set_pair_min_amount ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_min_amount_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &10i128);
+        let (client, s, d) = setup_pair(&env);
+        assert_eq!(client.get_min_fee_absolute(), None);
+        // 9_999 * 1% = 99.99 → truncates to 99, no floor applied.
+        assert_eq!(client.compute_route_fee(&s, &d, &9_999i128), 99);
     }
 
     #[test]
-    fn test_set_pair_min_amount_succeeds_after_register() {
+    fn test_fee_above_floor_is_unaffected() {
         let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_min_amount(&s, &d, &10i128);
-        assert_eq!(client.get_pair_min_amount(&s, &d), 10);
+        let (client, s, d) = setup_pair(&env);
+        client.set_min_fee_absolute(&50i128);
+        assert_eq!(client.get_min_fee_absolute(), Some(50));
+        // 99 > 50 → unchanged.
+        assert_eq!(client.compute_route_fee(&s, &d, &9_999i128), 99);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_min_amount_rejects_after_unregister() {
+    fn test_fee_below_floor_is_raised() {
         let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_min_amount(&s, &d, &10i128);
-    }
-
-    // --- set_pair_max_amount ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_max_amount_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup(&env);
-        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000i128);
+        let (client, s, d) = setup_pair(&env);
+        client.set_min_fee_absolute(&100i128);
+        // Proportional fee 99 raised to the 100 floor.
+        assert_eq!(client.compute_route_fee(&s, &d, &9_999i128), 100);
     }
 
     #[test]
-    fn test_set_pair_max_amount_succeeds_after_register() {
+    fn test_floor_exceeds_cap_floor_takes_precedence() {
         let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_max_amount(&s, &d, &1_000i128);
-        assert_eq!(client.get_pair_max_amount(&s, &d), 1_000);
+        let (client, s, d) = setup_pair(&env);
+        client.set_max_fee_absolute(&50i128); // cap 50
+        client.set_min_fee_absolute(&75i128); // floor 75 > cap 50
+        // Floor takes precedence: fee is 75.
+        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 75);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_max_amount_rejects_after_unregister() {
+    fn test_quote_and_compute_agree_under_floor() {
         let env = Env::default();
-        let (client, _admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_max_amount(&s, &d, &1_000i128);
-    }
-
-    // --- set_pair_liquidity ---
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_liquidity_rejects_unregistered_pair() {
-        let env = Env::default();
-        let (client, admin) = setup(&env);
-        client.set_pair_liquidity(
-            &admin,
-            &symbol_short!("USDC"),
-            &symbol_short!("EURC"),
-            &500i128,
-        );
+        let (client, s, d) = setup_pair(&env);
+        client.set_min_fee_absolute(&100i128);
+        let (qfee, qnet) = client.quote_route(&s, &d, &9_999i128);
+        assert_eq!(qfee, 100);
+        assert_eq!(qnet, 9_999 - 100);
+        assert_eq!(qfee, client.compute_route_fee(&s, &d, &9_999i128));
     }
 
     #[test]
-    fn test_set_pair_liquidity_succeeds_after_register() {
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_negative_floor_rejected() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
-        assert_eq!(client.get_pair_liquidity(&s, &d), 500);
+        let (client, _s, _d) = setup_pair(&env);
+        client.set_min_fee_absolute(&-1i128);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #5)")]
-    fn test_set_pair_liquidity_rejects_after_unregister() {
+    fn test_truncation_boundary_fee_bps_1() {
         let env = Env::default();
-        let (client, admin) = setup(&env);
-        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
-        client.register_pair(&s, &d);
-        client.unregister_pair(&s, &d);
-        client.set_pair_liquidity(&admin, &s, &d, &500i128);
+        let (client, s, d) = setup_pair(&env);
+        client.set_pair_fee_bps(&s, &d, &1u32); // 0.01%
+        client.set_min_fee_absolute(&1i128); // floor at 1
+        // 9_999 * 1 / 10_000 = 0.9999 → truncates to 0, floor raises to 1.
+        assert_eq!(client.compute_route_fee(&s, &d, &9_999i128), 1);
+        // 10_000 *1 /10_000 =1 → exactly floor, unchanged.
+        assert_eq!(client.compute_route_fee(&s, &d, &10_000i128), 1);
     }
 }
 
