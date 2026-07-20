@@ -2212,7 +2212,7 @@ mod test {
     }
 
     #[test]
-    fn test_reregister_after_unregister_restores_pair_and_preserves_fee() {
+    fn test_reregister_after_unregister_restores_pair_and_clears_fee() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         let src = symbol_short!("USDC");
@@ -2233,7 +2233,9 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        // unregister_pair clears live config (see clear_pair_config), so the
+        // fee reads back at its default (0), not the previously set value.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2243,7 +2245,10 @@ mod test {
         );
 
         assert!(client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        // Re-registering does not revive the pre-unregister fee; the pair
+        // starts from documented defaults, matching the README's
+        // Registration-first invariant section.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
     }
 
     /// Documents the current, unchanged behavior: `unregister_pair` alone
@@ -3849,6 +3854,156 @@ mod test_i41_fee_cap {
         let env = Env::default();
         let (client, _s, _d) = setup_pair(&env);
         client.set_max_fee_absolute(&-1i128);
+    }
+}
+
+/// Issue #144 — registration-before-configuration guard on the four
+/// per-pair config setters (`set_pair_fee_bps`, `set_pair_min_amount`,
+/// `set_pair_max_amount`, `set_pair_liquidity`). Each setter must reject
+/// an unregistered pair with `PairNotRegistered` (#5), accept the same
+/// call once the pair is registered, and reject it again once the pair
+/// is unregistered (config slots are cleared by `unregister_pair`, so
+/// the pair reverts to "unregistered" from each setter's perspective).
+#[cfg(test)]
+mod test_i144_registration_guard {
+    use super::*;
+    use soroban_sdk::{symbol_short, testutils::Address as _};
+
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &id);
+        (client, admin)
+    }
+
+    // --- set_pair_fee_bps ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_fee_bps_rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &10u32);
+    }
+
+    #[test]
+    fn test_set_pair_fee_bps_succeeds_after_register() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_fee_bps(&s, &d, &10u32);
+        assert_eq!(client.get_pair_fee_bps(&s, &d), 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_fee_bps_rejects_after_unregister() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.unregister_pair(&s, &d);
+        client.set_pair_fee_bps(&s, &d, &10u32);
+    }
+
+    // --- set_pair_min_amount ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_min_amount_rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &10i128);
+    }
+
+    #[test]
+    fn test_set_pair_min_amount_succeeds_after_register() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_min_amount(&s, &d, &10i128);
+        assert_eq!(client.get_pair_min_amount(&s, &d), 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_min_amount_rejects_after_unregister() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.unregister_pair(&s, &d);
+        client.set_pair_min_amount(&s, &d, &10i128);
+    }
+
+    // --- set_pair_max_amount ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_max_amount_rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000i128);
+    }
+
+    #[test]
+    fn test_set_pair_max_amount_succeeds_after_register() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_max_amount(&s, &d, &1_000i128);
+        assert_eq!(client.get_pair_max_amount(&s, &d), 1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_max_amount_rejects_after_unregister() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.unregister_pair(&s, &d);
+        client.set_pair_max_amount(&s, &d, &1_000i128);
+    }
+
+    // --- set_pair_liquidity ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_liquidity_rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &500i128,
+        );
+    }
+
+    #[test]
+    fn test_set_pair_liquidity_succeeds_after_register() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_liquidity(&admin, &s, &d, &500i128);
+        assert_eq!(client.get_pair_liquidity(&s, &d), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_set_pair_liquidity_rejects_after_unregister() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.unregister_pair(&s, &d);
+        client.set_pair_liquidity(&admin, &s, &d, &500i128);
     }
 }
 
