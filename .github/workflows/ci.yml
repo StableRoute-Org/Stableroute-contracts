@@ -33,10 +33,10 @@ jobs:
         run: cargo test
 
       - name: Install WASM target
-        run: rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32v1-none
 
       - name: Build deployable WASM artifact
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release
 
       - name: Install coverage tool
         uses: taiki-e/install-action@cargo-llvm-cov
