@@ -100,6 +100,62 @@ See `register_pair` and `set_pair_fee_bps` for the canonical placement
 When adding a new storage key, add it to the `DataKey` enum with a `///`
 comment explaining its tier rationale, matching the existing entries.
 
+## WASM size budget
+
+The deployable artifact (`cargo build --target wasm32v1-none --release`,
+producing `target/wasm32v1-none/release/stableroute_contracts.wasm`) has a
+hard size budget enforced by the `wasm-size` CI job. Artifact size is
+ledger-relevant on Stellar — upload fees and ledger footprint scale with
+the WASM byte size — which is why the release profile already tunes for
+size (`lto`, `codegen-units = 1`, `strip = "symbols"`).
+
+How it works:
+
+- The budget lives in `.github/wasm-size-budget`: a single integer, the
+  maximum allowed artifact size in **bytes**. The check is inclusive — an
+  artifact exactly at the budget passes.
+- On every push and PR, `scripts/check_wasm_size.sh` builds the
+  `wasm32v1-none` release artifact, records its byte size, and fails the
+  `wasm-size` job when the size exceeds the budget.
+- On PRs the script also builds the base branch in a throwaway worktree
+  and prints the size delta (bytes and percent). The delta is
+  informational; only the budget gates the job.
+
+Current baseline: **64,576 bytes** (measured at the commit that introduced
+the check, 2026-07-19, rustc 1.97.1). The budget is set to **66,560
+bytes** (64 KiB rounded up from the baseline, plus 1 KiB), giving roughly
+3 percent headroom for ordinary changes.
+
+Run the check locally before pushing:
+
+```bash
+rustup target add wasm32v1-none
+bash scripts/check_wasm_size.sh              # budget check only
+BASE_REF=main bash scripts/check_wasm_size.sh  # also print delta vs main
+bash scripts/check_wasm_size_test.sh         # self-tests for the script
+```
+
+### Re-baselining procedure
+
+Treat a budget bump like an error-code change: deliberate, visible, and
+justified. When a change legitimately needs more room:
+
+1. Build and measure locally:
+   `cargo build --target wasm32v1-none --release`, then
+   `wc -c < target/wasm32v1-none/release/stableroute_contracts.wasm`.
+2. Confirm the growth is essential — check that the release profile is
+   untouched and the new code cannot be expressed more compactly first.
+3. Update `.github/wasm-size-budget` **in the same PR** as the change that
+   needs it. Set the new budget to the measured size rounded up to the
+   next KiB, plus one KiB of headroom.
+4. Update the baseline figures in this section (size, date, rustc
+   version).
+5. Explain in the PR description why the growth is warranted; reviewers
+   should reject drive-by budget bumps.
+
+Never raise the budget in a separate "fix CI" PR — the bump must ride with
+the code that consumes it so the justification is reviewable.
+
 ## Local workflow
 
 Run these before opening a PR (they mirror CI):
@@ -108,10 +164,12 @@ Run these before opening a PR (they mirror CI):
 cargo fmt --all -- --check
 cargo build
 cargo test
+bash scripts/check_wasm_size.sh
 ```
 
 `cargo fmt --all` will auto-fix formatting; the `--check` form only reports.
-The full CI matrix (clippy, WASM build, coverage) is listed in the README.
+The full CI matrix (clippy, WASM build, size budget, coverage) is listed in
+the README.
 
 ## PR checklist
 
@@ -123,3 +181,5 @@ Before requesting review, confirm:
 - [ ] Events asserted in tests where an entrypoint publishes one.
 - [ ] Docs updated (this file and/or the README) when conventions change.
 - [ ] `cargo fmt --all -- --check`, `cargo build`, and `cargo test` all pass.
+- [ ] `bash scripts/check_wasm_size.sh` passes; if the budget had to be
+      raised, the re-baselining procedure above was followed in this PR.

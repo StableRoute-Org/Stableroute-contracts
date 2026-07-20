@@ -35,7 +35,7 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustup component add rustfmt clippy
-   rustup target add wasm32-unknown-unknown
+   rustup target add wasm32v1-none
    cargo install cargo-llvm-cov
    ```
 3. Build and test:
@@ -43,7 +43,8 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
    cargo build
    cargo clippy --all-targets -- -D warnings
    cargo test
-   cargo build --target wasm32-unknown-unknown --release
+   cargo build --target wasm32v1-none --release
+   bash scripts/check_wasm_size.sh
    cargo llvm-cov --all-targets --fail-under-lines 95
    ```
 4. Check formatting:
@@ -58,7 +59,8 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
 | `cargo build` | Build the contracts |
 | `cargo test` | Run unit tests |
 | `cargo clippy --all-targets -- -D warnings` | Treat Rust lints and warnings as CI failures |
-| `cargo build --target wasm32-unknown-unknown --release` | Build the deployable Soroban WASM artifact |
+| `cargo build --target wasm32v1-none --release` | Build the deployable Soroban WASM artifact |
+| `bash scripts/check_wasm_size.sh` | Enforce the WASM artifact size budget (see CONTRIBUTING.md) |
 | `cargo llvm-cov --all-targets --fail-under-lines 95` | Report coverage and fail below 95 percent line coverage |
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
@@ -172,7 +174,11 @@ On every push/PR to `main`, GitHub Actions runs:
 - `cargo build`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
-- `cargo build --target wasm32-unknown-unknown --release`
+- `cargo build --target wasm32v1-none --release`
+- `bash scripts/check_wasm_size.sh` — fails when the release WASM exceeds
+  the byte budget in `.github/wasm-size-budget`; on PRs it also prints the
+  size delta versus the base branch (see "WASM size budget" in
+  [CONTRIBUTING.md](CONTRIBUTING.md))
 - `cargo llvm-cov --all-targets --fail-under-lines 95`
 
 Ensure these pass locally before pushing.
@@ -184,7 +190,7 @@ numbering, event-topic limits, admin-auth and pause patterns, storage/TTL
 tiers) and the PR checklist.
 
 1. Fork the repo and create a branch from `main`.
-2. Make changes; keep formatting, linting, tests, WASM build, and coverage passing.
+2. Make changes; keep formatting, linting, tests, WASM build, size budget, and coverage passing.
 3. Open a PR; CI must be green.
 4. Follow the project’s code style (enforced by `rustfmt`).
 

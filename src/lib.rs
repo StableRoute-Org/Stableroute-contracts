@@ -2169,7 +2169,7 @@ mod test {
     }
 
     #[test]
-    fn test_reregister_after_unregister_restores_pair_and_preserves_fee() {
+    fn test_reregister_after_unregister_restores_pair_with_cleared_fee() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         let src = symbol_short!("USDC");
@@ -2190,7 +2190,11 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
+        assert_eq!(
+            client.get_pair_fee_bps(&src, &dest),
+            0,
+            "unregister_pair clears pair config via clear_pair_config, so the fee reads its 0 default"
+        );
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2200,6 +2204,13 @@ mod test {
         );
 
         assert!(client.is_pair_registered(&src, &dest));
+        assert_eq!(
+            client.get_pair_fee_bps(&src, &dest),
+            0,
+            "re-registering does not resurrect cleared config; the fee must be set again"
+        );
+
+        client.set_pair_fee_bps(&src, &dest, &42u32);
         assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
     }
 
