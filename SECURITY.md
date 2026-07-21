@@ -86,4 +86,10 @@ reports.** Instead, use coordinated disclosure:
    disclosure. We will acknowledge your report, work on a remediation,
    and credit you (if desired) once a fix has shipped.
 
+## Role Separation
+
+Operational and governance responsibilities are documented in [docs/roles.md](docs/roles.md).
+
+The contract separates administrative authority from oracle responsibilities following the principle of least privilege.
+
 Thank you for helping keep StableRoute and its users safe.

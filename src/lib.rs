@@ -1022,6 +1022,13 @@ impl StableRouteRouter {
     /// Admin-gated. The oracle may update pair liquidity via
     /// [`Self::set_pair_liquidity`] and **nothing else** — it cannot set
     /// fees, pause, rotate admin, or upgrade. Emits `oracle_set`.
+    /// Sets the oracle authorized to participate in liquidity updates.
+    ///
+    /// Only the admin may call this function.
+    ///
+    /// The oracle cannot perform administrative operations.
+    /// The oracle's responsibility is limited to liquidity publication through
+    /// `set_pair_liquidity`.
     pub fn set_oracle(env: Env, oracle: Address) {
         Self::require_admin(&env);
         env.storage().persistent().set(&DataKey::Oracle, &oracle);
@@ -1045,6 +1052,12 @@ impl StableRouteRouter {
     /// Idempotent: removing when no oracle is configured is a clean
     /// no-op. Emits `orac_rm` carrying the previously configured oracle
     /// (`None` on a no-op) so indexers can audit revocations.
+    /// Removes the configured oracle.
+    ///
+    /// Only the admin may call this function.
+    ///
+    /// After removal, liquidity updates cannot be performed until a new oracle
+    /// is configured.
     pub fn remove_oracle(env: Env) {
         Self::require_admin(&env);
         let removed: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
@@ -1067,6 +1080,13 @@ impl StableRouteRouter {
     /// [`Self::register_pair`]; rejects an unregistered pair with
     /// [`RouterError::PairNotRegistered`] (#5) so liquidity can never be
     /// configured for a corridor that was never (or no longer) enabled.
+    /// Updates the available liquidity for a registered pair.
+    ///
+    /// This operation requires authorization from both:
+    /// - the contract admin
+    /// - the configured oracle
+    ///
+    /// The dual-authorization model limits the impact of a compromised oracle.
     pub fn set_pair_liquidity(
         env: Env,
         caller: Address,

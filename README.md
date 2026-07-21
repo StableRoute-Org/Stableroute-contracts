@@ -30,6 +30,7 @@ reference.
   reference for every on-chain storage slot: key shape, value type, tier,
   default-when-absent, reader/writer entrypoints, and TTL classification.
 - **[ABI reference](docs/abi.md)** — generated client-facing interface.
+- **[Upgrade & Migration Runbook](docs/upgrade.md)** — operational guide for safely upgrading the contract, running schema migrations, verifying schema versions, and handling rollback scenarios.
 - **[Deployment Guide](docs/deployment.md)** — covers constructor deployment and the legacy `init` trap.
 
 ## Storage tiers
@@ -203,6 +204,8 @@ The router separates governance from the high-frequency liquidity feed:
   fees, pause, rotate admin, or upgrade. This lets a frequently rotated
   off-chain key keep the liquidity feed fresh without holding governance
   power.
+
+See [docs/roles.md](docs/roles.md) for the complete capability matrix, role boundaries, key rotation procedures, and compromised-key recovery guidance.
 
 ### Oracle lifecycle
 
