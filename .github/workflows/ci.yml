@@ -43,3 +43,15 @@ jobs:
 
       - name: Check coverage
         run: cargo llvm-cov --all-targets --fail-under-lines 95
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Audit dependencies
+        run: cargo audit
+
+      - name: Check dependency policies
+        run: cargo deny check

@@ -123,3 +123,19 @@ Before requesting review, confirm:
 - [ ] Events asserted in tests where an entrypoint publishes one.
 - [ ] Docs updated (this file and/or the README) when conventions change.
 - [ ] `cargo fmt --all -- --check`, `cargo build`, and `cargo test` all pass.
+
+## Supply-chain checks
+
+CI runs:
+
+- cargo audit
+- cargo deny check
+
+Known upstream advisories from Soroban dependencies are currently allowlisted in `deny.toml` until upstream releases fixes.
+
+When a new advisory appears:
+
+1. Run `cargo audit`
+2. Check whether the vulnerable crate is a direct or transitive dependency.
+3. Upgrade where possible.
+4. If no fix exists, add the RustSec ID to `deny.toml` with a comment explaining why.

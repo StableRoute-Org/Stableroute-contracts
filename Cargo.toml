@@ -3,6 +3,7 @@ name = "stableroute-contracts"
 version = "0.1.0"
 edition = "2021"
 description = "StableRoute Soroban smart contracts for Stellar liquidity routing"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
