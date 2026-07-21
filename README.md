@@ -134,6 +134,8 @@ The router separates governance from the high-frequency liquidity feed:
   off-chain key keep the liquidity feed fresh without holding governance
   power.
 
+See [docs/roles.md](docs/roles.md) for the complete capability matrix, role boundaries, key rotation procedures, and compromised-key recovery guidance.
+
 ### Oracle lifecycle
 
 | Action | Entrypoint | Auth | Event |
