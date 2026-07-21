@@ -61,6 +61,16 @@ See **[docs/storage.md](docs/storage.md)** for the full key-by-key
 reference (value type, default-when-absent, reader/writer entrypoints,
 and TTL classification).
 
+### Per-pair route metrics
+`PairRouteCount` (u64) and `PairVolume` (i128) accumulate on every
+successful `compute_route_fee` call via `saturating_add`, so a corridor's
+lifetime route count and cumulative routed volume can never panic or wrap
+even near `i128::MAX`. Read them with `get_pair_route_count(source,
+destination)` and `get_pair_volume(source, destination)` -- both default
+to `0` for a pair that has never been routed, and each pair's counters
+are fully independent of every other pair's. `purge_pair_metrics` is the
+only entrypoint that resets them.
+
 ## Security
 
 See **[`SECURITY.md`](SECURITY.md)** for the router's trust model (single

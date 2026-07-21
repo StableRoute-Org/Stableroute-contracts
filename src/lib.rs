@@ -3833,6 +3833,45 @@ mod test_i18_read_surface {
     }
 
     #[test]
+    fn test_pair_route_count_and_volume_stay_isolated_per_pair() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s1, d1) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        let (s2, d2) = (symbol_short!("XLM"), symbol_short!("USDC"));
+        client.register_pair(&s1, &d1);
+        client.register_pair(&s2, &d2);
+        client.set_pair_liquidity(&admin, &s1, &d1, &1_000i128);
+        client.set_pair_liquidity(&admin, &s2, &d2, &1_000i128);
+        client.compute_route_fee(&s1, &d1, &100i128);
+        client.compute_route_fee(&s1, &d1, &50i128);
+        assert_eq!(client.get_pair_route_count(&s1, &d1), 2);
+        assert_eq!(client.get_pair_volume(&s1, &d1), 150);
+        assert_eq!(client.get_pair_route_count(&s2, &d2), 0);
+        assert_eq!(client.get_pair_volume(&s2, &d2), 0);
+        client.compute_route_fee(&s2, &d2, &777i128);
+        assert_eq!(client.get_pair_route_count(&s1, &d1), 2);
+        assert_eq!(client.get_pair_volume(&s1, &d1), 150);
+        assert_eq!(client.get_pair_route_count(&s2, &d2), 1);
+        assert_eq!(client.get_pair_volume(&s2, &d2), 777);
+    }
+
+    #[test]
+    fn test_pair_volume_saturates_near_i128_max_without_panicking() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_max_amount(&s, &d, &i128::MAX);
+        client.set_pair_liquidity(&admin, &s, &d, &i128::MAX);
+        let near_max = i128::MAX - 100;
+        client.compute_route_fee(&s, &d, &near_max);
+        assert_eq!(client.get_pair_volume(&s, &d), near_max);
+        client.compute_route_fee(&s, &d, &1_000i128);
+        assert_eq!(client.get_pair_volume(&s, &d), i128::MAX);
+        assert_eq!(client.get_pair_route_count(&s, &d), 2);
+    }
+
+    #[test]
     fn test_pair_info_ext_matches_get_pair_info_base_fields() {
         let env = Env::default();
         let (client, _admin) = setup(&env);
