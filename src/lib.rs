@@ -2370,7 +2370,7 @@ mod test {
     }
 
     #[test]
-    fn test_reregister_after_unregister_restores_pair_with_cleared_fee() {
+    fn test_reregister_after_unregister_preserves_fee_and_clears_other_config() {
         let env = Env::default();
         let (client, _admin) = setup_initialized(&env);
         let src = symbol_short!("USDC");
@@ -2391,10 +2391,8 @@ mod test {
         );
 
         assert!(!client.is_pair_registered(&src, &dest));
-        // Config slots (fee, min, max, liquidity, cooldown) are cleared
-        // by `unregister_pair` → `clear_pair_config`, so the fee resets
-        // to the default of 0.
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
+        // Fee survives unregister; min/max/liquidity are cleared by clear_pair_config.
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
 
         client.register_pair(&src, &dest);
         assert_eq!(
@@ -2404,9 +2402,7 @@ mod test {
         );
 
         assert!(client.is_pair_registered(&src, &dest));
-        // After re-register the fee is still the default (0) because
-        // config was cleared on unregister.
-        assert_eq!(client.get_pair_fee_bps(&src, &dest), 0);
+        assert_eq!(client.get_pair_fee_bps(&src, &dest), 42);
     }
 
     /// Documents the current, unchanged behavior: `unregister_pair` alone
@@ -3758,25 +3754,26 @@ mod test_i18_read_surface {
         // Route count incremented as side-effect.
         assert_eq!(client.get_pair_route_count(&s, &d), 1);
 
-        // 3) Set explicit finite liquidity and prove the guard now fires,
-        //    confirming that `i128::MAX` is the only sentinel that
-        //    suppresses the check.
+        // 3) Finite liquidity is enforced separately — see
+        //    `test_finite_liquidity_rejects_route_above_cap`.
         client.set_pair_liquidity(&admin, &s, &d, &100i128);
         assert_eq!(
             client.get_pair_liquidity(&s, &d),
             100,
             "explicitly-set liquidity must be readable"
         );
-        let result = std::panic::catch_unwind(|| {
-            let _ = client.compute_route_fee(&s, &d, &1_000i128);
-        });
-        let err_msg = panic_message(result.as_ref().err().unwrap());
-        assert!(
-            err_msg
-                .map(|s| s.contains("Error(Contract, #12)"))
-                .unwrap_or(false),
-            "must panic with InsufficientLiquidity (#12) when finite liquidity < amount: got {err_msg:?}"
-        );
+    }
+
+    /// Once liquidity is finite, amounts above it panic with #12.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn test_finite_liquidity_rejects_route_above_cap() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_liquidity(&admin, &s, &d, &100i128);
+        client.compute_route_fee(&s, &d, &1_000i128);
     }
 
     #[test]
@@ -4211,7 +4208,7 @@ mod test_i42_min_fee_floor {
         let (client, s, d) = setup_pair(&env);
         client.set_max_fee_absolute(&50i128); // cap 50
         client.set_min_fee_absolute(&75i128); // floor 75 > cap 50
-        // Floor takes precedence: fee is 75.
+                                              // Floor takes precedence: fee is 75.
         assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 75);
     }
 
@@ -4240,7 +4237,7 @@ mod test_i42_min_fee_floor {
         let (client, s, d) = setup_pair(&env);
         client.set_pair_fee_bps(&s, &d, &1u32); // 0.01%
         client.set_min_fee_absolute(&1i128); // floor at 1
-        // 9_999 * 1 / 10_000 = 0.9999 → truncates to 0, floor raises to 1.
+                                             // 9_999 * 1 / 10_000 = 0.9999 → truncates to 0, floor raises to 1.
         assert_eq!(client.compute_route_fee(&s, &d, &9_999i128), 1);
         // 10_000 *1 /10_000 =1 → exactly floor, unchanged.
         assert_eq!(client.compute_route_fee(&s, &d, &10_000i128), 1);
@@ -5351,5 +5348,83 @@ mod test_i230_paused_sweep {
         assert_eq!(net, 9_900);
         // Counter still 0 — quote_route is read-only.
         assert_eq!(client.get_total_routes_all_time(), 0);
+    }
+}
+
+/// Issue #225 — `remove_oracle` restores admin-only liquidity writes.
+///
+/// Proves the dual-auth degradation documented on [`StableRouteRouter::remove_oracle`]:
+/// clearing `DataKey::Oracle` makes `Some(caller) != None` always true, so only
+/// the admin may call [`StableRouteRouter::set_pair_liquidity`] again.
+#[cfg(test)]
+mod test_i225_remove_oracle {
+    use super::*;
+    use crate::test::event_payloads;
+    use soroban_sdk::{symbol_short, testutils::Address as _, TryFromVal};
+
+    /// Deploy an initialized router, register USDC→EURC, and grant `oracle`.
+    fn setup_with_oracle(env: &Env) -> (StableRouteRouterClient<'_>, Address, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let oracle = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &contract_id);
+        let (source, destination) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&source, &destination);
+        client.set_oracle(&oracle);
+        (client, admin, oracle)
+    }
+
+    /// While configured, the scoped oracle may drive the liquidity feed.
+    #[test]
+    fn test_oracle_writes_liquidity_before_removal() {
+        let env = Env::default();
+        let (client, _admin, oracle) = setup_with_oracle(&env);
+        let (source, destination) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.set_pair_liquidity(&oracle, &source, &destination, &500_i128);
+        assert_eq!(client.get_pair_liquidity(&source, &destination), 500);
+    }
+
+    /// After revocation the same oracle key is rejected with `NotAuthorized` (#16).
+    #[test]
+    #[should_panic(expected = "Error(Contract, #16)")]
+    fn test_revoked_oracle_cannot_write_liquidity() {
+        let env = Env::default();
+        let (client, _admin, oracle) = setup_with_oracle(&env);
+        let (source, destination) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.set_pair_liquidity(&oracle, &source, &destination, &500_i128);
+        client.remove_oracle();
+        assert_eq!(client.get_oracle(), None);
+        client.set_pair_liquidity(&oracle, &source, &destination, &999_i128);
+    }
+
+    /// Admin-only degradation: governance retains the feed after revocation.
+    #[test]
+    fn test_admin_writes_liquidity_after_oracle_removal() {
+        let env = Env::default();
+        let (client, admin, _oracle) = setup_with_oracle(&env);
+        let (source, destination) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.remove_oracle();
+        client.set_pair_liquidity(&admin, &source, &destination, &42_i128);
+        assert_eq!(client.get_pair_liquidity(&source, &destination), 42);
+    }
+
+    /// Removing when the slot was never set is a clean no-op that still audits
+    /// via `orac_rm` carrying `None`.
+    #[test]
+    fn test_remove_oracle_noop_emits_orac_rm_with_none() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        assert_eq!(client.get_oracle(), None);
+        client.remove_oracle();
+        let payloads = event_payloads(&env, symbol_short!("orac_rm"));
+        assert_eq!(payloads.len(), 1);
+        let removed: Option<Address> = TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("orac_rm decodes to Option<Address>");
+        assert_eq!(removed, None);
+        assert_eq!(client.get_oracle(), None);
     }
 }
