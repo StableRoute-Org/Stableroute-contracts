@@ -33,10 +33,10 @@ jobs:
         run: cargo test
 
       - name: Install WASM target
-        run: rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32v1-none
 
       - name: Build deployable WASM artifact
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release
 
       - name: Install coverage tool
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -55,3 +55,27 @@ jobs:
 
       - name: Check dependency policies
         run: cargo deny check
+  # Enforces the deployable-artifact size budget documented in
+  # CONTRIBUTING.md ("WASM size budget"). Fails when the wasm32v1-none
+  # release artifact exceeds .github/wasm-size-budget and prints the size
+  # delta versus the PR base branch.
+  wasm-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Self-test the size-check script
+        run: bash scripts/check_wasm_size_test.sh
+
+      - name: Enforce WASM artifact size budget
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/check_wasm_size.sh

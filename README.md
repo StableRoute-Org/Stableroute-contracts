@@ -6,12 +6,60 @@ Soroban smart contracts for [StableRoute](https://github.com/your-org/stablerout
 
 - **StableRouteRouter** — Soroban contract placeholder for routing metadata and route integrity (version, route tags). Production logic will integrate with path payments and liquidity data.
 
+## Protocol limits
+
+The router enforces compile-time bounds that callers must respect before
+submitting a transaction. Discover them on-chain via the auth-free, read-only
+`get_limits` entrypoint, which returns a `RouterLimits` struct mirroring the
+constants below:
+
+| Limit | Constant | Value | Enforced by |
+|-------|----------|-------|-------------|
+| Max per-pair fee | `MAX_FEE_BPS` | `1_000` bps (10%) | `set_pair_fee_bps`, `set_pair_fees_bps` |
+| BPS denominator | `BPS_DENOMINATOR` | `10_000` | fee arithmetic |
+| Max batch size | `MAX_BATCH_SIZE` | `100` entries | `register_pairs`, `set_pair_fees_bps` |
+| Max cooldown | `MAX_COOLDOWN_SECS` | `2_592_000` s (30 days) | `set_pair_cooldown` |
+
+The `RouterLimits` field order is a stable part of the on-chain ABI — do not
+reorder or insert fields. See [`docs/abi.md`](docs/abi.md) for the authoritative
+reference.
+
 ## Documentation
 
 - **[Storage model & DataKey reference](docs/storage.md)** — authoritative
   reference for every on-chain storage slot: key shape, value type, tier,
   default-when-absent, reader/writer entrypoints, and TTL classification.
 - **[ABI reference](docs/abi.md)** — generated client-facing interface.
+- **[Deployment Guide](docs/deployment.md)** — covers constructor deployment and the legacy `init` trap.
+
+## Storage tiers
+
+Contract state lives in two Soroban storage tiers:
+
+- **Instance storage** -- `DataKey::Admin`, `DataKey::PendingAdmin`, and
+  `DataKey::Paused`. These are the hot globals: every admin-gated
+  entrypoint reads `Admin`, and every state-changing entrypoint reads
+  `Paused` before doing anything else. Bundling them with the contract
+  instance avoids a separate persistent-storage read (and its own TTL
+  check) on every call. Every write to one of these three keys also
+  extends the instance's TTL via
+  `env.storage().instance().extend_ttl(...)`, so the instance -- and
+  these singletons with it -- never archives as long as the contract
+  keeps seeing admin/pause/transfer traffic.
+- **Persistent storage** -- every other key: per-pair config and metrics
+  (`Pair`, `PairFeeBps`, `PairMinAmount`, `PairMaxAmount`,
+  `PairLiquidity`, `PairCooldown`, `PairRouteCount`, `PairVolume`,
+  `PairLastRouteAt`), and less-hot singletons (`FeeRecipient`,
+  `TotalRoutesAllTime`, `Timelock`, `PendingAdminEta`, `SchemaVersion`,
+  `ReentrancyLock`, `MaxFeeAbsolute`, `Oracle`).
+
+`PendingAdminEta` stays in persistent storage even though `PendingAdmin`
+moved to instance: it's only read during an already-queued handover, not
+on every call, so it doesn't carry its weight as a hot global.
+
+See **[docs/storage.md](docs/storage.md)** for the full key-by-key
+reference (value type, default-when-absent, reader/writer entrypoints,
+and TTL classification).
 
 ## Security
 
@@ -35,7 +83,7 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustup component add rustfmt clippy
-   rustup target add wasm32-unknown-unknown
+   rustup target add wasm32v1-none
    cargo install cargo-llvm-cov
    ```
 3. Build and test:
@@ -43,7 +91,8 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
    cargo build
    cargo clippy --all-targets -- -D warnings
    cargo test
-   cargo build --target wasm32-unknown-unknown --release
+   cargo build --target wasm32v1-none --release
+   bash scripts/check_wasm_size.sh
    cargo llvm-cov --all-targets --fail-under-lines 95
    ```
 4. Check formatting:
@@ -58,7 +107,8 @@ Discord — <https://discord.gg/37aCpusvx> — not as public issues.
 | `cargo build` | Build the contracts |
 | `cargo test` | Run unit tests |
 | `cargo clippy --all-targets -- -D warnings` | Treat Rust lints and warnings as CI failures |
-| `cargo build --target wasm32-unknown-unknown --release` | Build the deployable Soroban WASM artifact |
+| `cargo build --target wasm32v1-none --release` | Build the deployable Soroban WASM artifact |
+| `bash scripts/check_wasm_size.sh` | Enforce the WASM artifact size budget (see CONTRIBUTING.md) |
 | `cargo llvm-cov --all-targets --fail-under-lines 95` | Report coverage and fail below 95 percent line coverage |
 | `cargo fmt --all` | Format code |
 | `cargo fmt --all -- --check` | CI: verify formatting |
@@ -121,6 +171,16 @@ would otherwise waste storage rent and pollute future pair enumeration.
 the documented defaults instead of reviving stale fee, bounds, or liquidity
 values.
 
+**Note on `unregister_pair` blocking:** one could imagine requiring
+`unregister_pair` to fail while a pair still has live config (fee/bounds/
+liquidity) set, forcing an explicit config-clear step first. This was
+considered for issue #144 and deliberately left out of scope: since
+`unregister_pair` already clears all four config slots itself (see
+above), there is no window where stale config could survive an
+unregister to justify blocking the call. A future issue could revisit
+this if the cleanup behavior ever changes.
+
+
 ## Roles & least privilege
 
 The router separates governance from the high-frequency liquidity feed:
@@ -172,7 +232,11 @@ On every push/PR to `main`, GitHub Actions runs:
 - `cargo build`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
-- `cargo build --target wasm32-unknown-unknown --release`
+- `cargo build --target wasm32v1-none --release`
+- `bash scripts/check_wasm_size.sh` — fails when the release WASM exceeds
+  the byte budget in `.github/wasm-size-budget`; on PRs it also prints the
+  size delta versus the base branch (see "WASM size budget" in
+  [CONTRIBUTING.md](CONTRIBUTING.md))
 - `cargo llvm-cov --all-targets --fail-under-lines 95`
 
 Ensure these pass locally before pushing.
@@ -184,7 +248,7 @@ numbering, event-topic limits, admin-auth and pause patterns, storage/TTL
 tiers) and the PR checklist.
 
 1. Fork the repo and create a branch from `main`.
-2. Make changes; keep formatting, linting, tests, WASM build, and coverage passing.
+2. Make changes; keep formatting, linting, tests, WASM build, size budget, and coverage passing.
 3. Open a PR; CI must be green.
 4. Follow the project’s code style (enforced by `rustfmt`).
 
@@ -196,6 +260,42 @@ tiers) and the PR checklist.
 
 ### Authorization testing
 All admin-gated entrypoints have negative-authorization tests in `test_i19_authorization` (asserting non-admins are rejected) and positive controls (asserting admins can invoke them). When adding a new admin-gated entrypoint, add a corresponding `test_*_requires_admin` case to this module.
+
+### Defaults and net-computation testing (issue #146)
+`get_pair_info` on a never-touched pair returns the documented sentinel
+defaults exactly: `registered: false, fee_bps: 0, min_amount: 0,
+max_amount: i128::MAX, liquidity: 0, last_route_at: 0`
+(`test_pair_info_defaults_for_unconfigured_pair`). A bare-registered pair
+flips only `registered` to `true`, leaving every other field at its
+default (`test_pair_info_reflects_bare_registration_only`).
+
+`quote_route`'s net (`amount - fee`) is asserted exactly at zero fee and
+at the `MAX_FEE_BPS` cap
+(`test_quote_route_net_equals_amount_minus_fee_at_zero_fee`,
+`test_quote_route_net_equals_amount_minus_fee_at_max_fee_bps`), plus a
+quote-vs-compute parity sweep across zero/typical/max fee tiers on one
+pair (`test_quote_and_compute_agree_across_fee_tiers`), all in
+`test_i16_fee_arithmetic`. This complements the existing property tests
+`prop_fee_within_amount` and `prop_quote_matches_compute`, which already
+prove `0 <= fee <= amount` and `fee + net == amount` generally across the
+full `fee_bps` and `amount` ranges — the tests above pin the same
+invariants at fixed, human-readable boundary values named in issue #146.
+### Pause coverage
+
+`test_i230_paused_sweep` is the **exhaustive pause sweep**: it enumerates every state-changing entrypoint and asserts its expected behaviour while the router is paused. The module documents three categories:
+
+| Category | Entrypoints | Expected when paused |
+|----------|-------------|----------------------|
+| Route accounting | `compute_route_fee` | Rejected — `ContractPaused` (#9) |
+| Pair registration | `register_pair`, `register_pairs` | Rejected — `ContractPaused` (#9) |
+| Fee setters | `set_pair_fee_bps`, `set_pair_fees_bps` | Rejected — `ContractPaused` (#9) |
+| Config setters | `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`, `set_pair_cooldown`, `set_fee_recipient`, `set_max_fee_absolute`, `set_oracle`, `remove_oracle` | Succeeds — governance/config ops are not blocked |
+| Pair lifecycle | `unregister_pair`, `purge_pair_metrics` | Succeeds — admin cleanup must remain available |
+| Migration | `migrate_v1_to_v2` | Succeeds — schema ops are not blocked |
+| Governance | `pause` (idempotent), `unpause`, `set_timelock`, `propose_admin_transfer`, `cancel_admin_transfer`, `force_admin_transfer`, `accept_admin_transfer` | Succeeds — governance must work to recover |
+| Upgrade | `upgrade` | Succeeds — documented trade-off; patch deployment must survive an emergency pause |
+
+The **fail-loudly invariant**: if a new state-changing entrypoint is added without being added to this module, the coverage drop is caught by `cargo llvm-cov --fail-under-lines 95`. When adding a new entrypoint, add a corresponding case to `test_i230_paused_sweep` that documents its pause policy explicitly.
 
 ## Liquidity consumption model
 

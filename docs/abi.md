@@ -15,6 +15,7 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `init` | admin | `admin: Address` | — | `AlreadyInitialized` (#1) | `init(admin)` |
 | `version` | none | — | `Symbol` (`ROUTER_V2`) | — | — |
 | `get_schema_version` | none | — | `u32` | — | — |
+| `get_limits` | none | — | `RouterLimits` | — | — |
 | `migrate_v1_to_v2` | admin | — | — | `NotInitialized` (#2), `MigrationVersionMismatch` (#13) | — |
 
 ## Admin / governance
@@ -110,3 +111,18 @@ returns all per-pair slots in a single round-trip. The extra fields beyond
 
 > Keep this catalog in sync with the `symbol_short!(...)` calls in
 > `src/lib.rs` whenever an entrypoint or event is added or changed.
+
+## Protocol limits (`RouterLimits`)
+
+`get_limits` (auth-free, read-only) returns a `RouterLimits` struct mirroring
+the compile-time constants so callers that did not compile against this crate
+can discover the enforced bounds in a single read. Field order is part of the
+stable on-chain ABI — **do not reorder or insert fields**, as that changes the
+XDR encoding. New limits must be appended.
+
+| Field | Type | Compile-time constant | Value | Enforced by |
+|-------|------|-----------------------|-------|-------------|
+| `max_fee_bps` | `u32` | `MAX_FEE_BPS` | `1_000` (10%) | `set_pair_fee_bps`, `set_pair_fees_bps` (`FeeBpsTooHigh` #4) |
+| `bps_denominator` | `i128` | `BPS_DENOMINATOR` | `10_000` | fee arithmetic |
+| `max_batch_size` | `u32` | `MAX_BATCH_SIZE` | `100` | `register_pairs`, `set_pair_fees_bps` (`BatchTooLarge` #18) |
+| `max_cooldown_secs` | `u64` | `MAX_COOLDOWN_SECS` | `2_592_000` (30 days) | `set_pair_cooldown` (`CooldownTooLarge` #20) |
