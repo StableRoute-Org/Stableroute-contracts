@@ -3026,7 +3026,7 @@ mod test {
 /// Covers the default-false flag, event emission, the `ContractPaused` (#9)
 /// rejection on gated entrypoints, recovery after unpause, and idempotency.
 #[cfg(test)]
-mod test_i14_pause_gating {
+mod pause_gating {
     use super::*;
     use soroban_sdk::{
         symbol_short,
@@ -3109,7 +3109,7 @@ mod test_i14_pause_gating {
 /// over-liquidity (#12) rejection, the unset sentinels, and negative
 /// liquidity rejection (#6).
 #[cfg(test)]
-mod test_i15_bounds_liquidity {
+mod bounds_liquidity {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
@@ -3204,7 +3204,7 @@ mod test_i15_bounds_liquidity {
 /// Exercises the `checked_mul` overflow path (returns 0), truncating integer
 /// division, quote/compute parity, and the saturating route counter.
 #[cfg(test)]
-mod test_i16_fee_arithmetic {
+mod fee_arithmetic {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
@@ -3269,7 +3269,7 @@ mod test_i16_fee_arithmetic {
 /// Covers the default-of-1, the v1->v2 stamp, the double-migration guard
 /// (#13), and the admin-auth requirement.
 #[cfg(test)]
-mod test_i17_migration {
+mod migration {
     use super::*;
     use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
     use soroban_sdk::IntoVal;
@@ -3331,7 +3331,7 @@ mod test_i17_migration {
 /// `is_pair_active`, `quote_route` non-mutation + parity, and
 /// `get_pair_last_route_at` before/after a route.
 #[cfg(test)]
-mod test_i18_read_surface {
+mod read_surface {
     use super::*;
     use soroban_sdk::{
         symbol_short,
@@ -3543,7 +3543,7 @@ mod test_i18_read_surface {
 /// `init`, then invokes an admin entrypoint with no matching auth and asserts
 /// the call panics. A positive control confirms the call works with auth.
 #[cfg(test)]
-mod test_i19_authorization {
+mod authorization {
     use super::*;
     use soroban_sdk::{
         symbol_short,
@@ -3758,7 +3758,7 @@ mod test_i19_authorization {
 /// and the optional absolute MaxFeeAbsolute apply; the tighter wins. The cap
 /// is unset by default (backward compatible).
 #[cfg(test)]
-mod test_i41_fee_cap {
+mod fee_cap {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
@@ -4052,7 +4052,7 @@ mod test_batch {
 /// - All admin-gated entrypoints panic with `NotInitialized` (#2) on uninitialized contracts
 /// - Security invariants: no admin entrypoint succeeds before initialization
 #[cfg(test)]
-mod test_i153_version_uninitialized {
+mod version_reads {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
