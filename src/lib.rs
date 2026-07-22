@@ -138,6 +138,9 @@ pub enum DataKey {
     /// successful `compute_route_fee`. Default is context-dependent:
     /// `get_pair_liquidity` returns `0` for absent, while
     /// `compute_route_fee` treats absent as `i128::MAX` (unbounded).
+    /// An explicitly set `0` liquidity makes the pair non-routable
+    /// in both `compute_route_fee` and `quote_route` via
+    /// `InsufficientLiquidity`.
     PairLiquidity(Symbol, Symbol),
     /// Address that receives protocol fees on settlement (singleton,
     /// `Address`, persistent). Absent ↔ `None`.
@@ -839,6 +842,11 @@ impl StableRouteRouter {
 
     /// Read-only quote of fee + net for a pair without writing the
     /// timestamp / counter. Useful as a planner-only hook.
+    ///
+    /// Follows the same liquidity rules as [`Self::compute_route_fee`]:
+    /// an explicitly set `0` liquidity implies an inactive corridor
+    /// and returns [`RouterError::InsufficientLiquidity`]. Absent
+    /// liquidity retains the unbounded behavior.
     pub fn quote_route(
         env: Env,
         source: Symbol,
@@ -855,6 +863,14 @@ impl StableRouteRouter {
             .unwrap_or(false)
         {
             panic_with_error!(&env, RouterError::PairNotRegistered);
+        }
+        if matches!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::PairLiquidity(source.clone(), destination.clone())),
+            Some(0)
+        ) {
+            panic_with_error!(&env, RouterError::InsufficientLiquidity);
         }
         let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
         let fee = amount
@@ -1331,11 +1347,12 @@ impl StableRouteRouter {
     ///
     /// After passing all pre-condition checks, the function debits `amount`
     /// from the stored `PairLiquidity` via saturating subtraction. If the
-    /// liquidity slot is unset (i.e. reads as `i128::MAX` — the unbounded
-    /// sentinel) the decrement is skipped entirely, preserving the "no
-    /// oracle configured" behaviour. When a decrement does occur a
-    /// `liq_used` event carrying `(source, destination, remaining_liquidity)`
-    /// is emitted. The slot TTL is extended on each write.
+    /// liquidity slot is unset the decrement is skipped entirely, preserving
+    /// the "no oracle configured" behavior. If liquidity is explicitly set
+    /// to `0`, the function returns [`RouterError::InsufficientLiquidity`]
+    /// before any state mutation. When a decrement does occur a `liq_used`
+    /// event carrying `(source, destination, remaining_liquidity)` is
+    /// emitted. The slot TTL is extended on each write.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         // Acquire the reentrancy lock at the very start so that every exit
         // path — success or panic — can explicitly release it. This ensures
@@ -1366,11 +1383,15 @@ impl StableRouteRouter {
         if amount > max_amount {
             Self::route_abort(&env, RouterError::AmountAboveMax);
         }
-        let liquidity: i128 = env
+        let liquidity: i128 = match env
             .storage()
             .persistent()
             .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
-            .unwrap_or(i128::MAX);
+        {
+            Some(0) => Self::route_abort(&env, RouterError::InsufficientLiquidity),
+            Some(v) => v,
+            None => i128::MAX,
+        };
         if amount > liquidity {
             Self::route_abort(&env, RouterError::InsufficientLiquidity);
         }
@@ -3405,6 +3426,35 @@ mod test_i15_bounds_liquidity {
         let env = Env::default();
         let (client, admin, s, d) = setup_pair(&env);
         client.set_pair_liquidity(&admin, &s, &d, &-1i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn test_explicit_zero_liquidity_rejected_in_compute_route_fee() {
+        let env = Env::default();
+        let (client, admin, s, d) = setup_pair(&env);
+        client.set_pair_liquidity(&admin, &s, &d, &0i128);
+        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
+        client.compute_route_fee(&s, &d, &1i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn test_explicit_zero_liquidity_rejected_in_quote_route() {
+        let env = Env::default();
+        let (client, admin, s, d) = setup_pair(&env);
+        client.set_pair_liquidity(&admin, &s, &d, &0i128);
+        client.quote_route(&s, &d, &1i128);
+    }
+
+    #[test]
+    fn test_absent_liquidity_remains_unbounded_in_compute_route_fee() {
+        let env = Env::default();
+        let (client, _admin, s, d) = setup_pair(&env);
+        // Explicitly do NOT set liquidity.
+        assert_eq!(client.get_pair_liquidity(&s, &d), 0);
+        // Unset slot behaves as unbounded.
+        assert_eq!(client.compute_route_fee(&s, &d, &1i128), 0);
     }
 }
 
