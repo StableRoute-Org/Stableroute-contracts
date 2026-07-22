@@ -367,10 +367,11 @@ How it works:
   and prints the size delta (bytes and percent). The delta is
   informational; only the budget gates the job.
 
-Current baseline: **64,576 bytes** (measured at the commit that introduced
-the check, 2026-07-19, rustc 1.97.1). The budget is set to **66,560
-bytes** (64 KiB rounded up from the baseline, plus 1 KiB), giving roughly
-3 percent headroom for ordinary changes.
+Current baseline: **68,477 bytes** (re-measured 2026-07-22, rustc 1.91.1,
+after the per-pair route-counter/volume tracking, `get_limits`, and
+absolute min-fee-floor features landed). The budget is set to **69,632
+bytes** (67 KiB rounded up from the baseline, plus 1 KiB), giving roughly
+2 percent headroom for ordinary changes.
 
 Run the check locally before pushing:
 

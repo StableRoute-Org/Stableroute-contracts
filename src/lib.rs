@@ -370,6 +370,45 @@ impl StableRouteRouter {
             .set(&DataKey::ReentrancyLock, &false);
     }
 
+    /// Release the reentrancy lock and panic with `err`. Consolidates the
+    /// exit-then-panic pattern used on every guard-failure path of
+    /// [`Self::compute_route_fee`] so the lock is never leaked on a
+    /// rejection.
+    fn route_abort(env: &Env, err: RouterError) -> ! {
+        Self::exit_nonreentrant(env);
+        panic_with_error!(env, err)
+    }
+
+    /// Read the paused flag from the instance-storage hot global.
+    /// Single source of truth for the `Paused` sentinel (absent → `false`).
+    fn paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Panic with [`RouterError::ContractPaused`] when the router is paused.
+    /// Shared by every state-changing, pause-gated entrypoint.
+    fn require_not_paused(env: &Env) {
+        if Self::paused(env) {
+            panic_with_error!(env, RouterError::ContractPaused);
+        }
+    }
+
+    /// Finalise an admin handover: install `new_admin`, clear the pending
+    /// slots, renew the instance TTL, and emit the `executed` event. Shared
+    /// tail of [`Self::accept_admin_transfer`] and
+    /// [`Self::force_admin_transfer`].
+    fn finalize_admin_transfer(env: &Env, new_admin: Address) {
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::PendingAdminEta);
+        Self::bump_instance_ttl(env);
+        env.events()
+            .publish((symbol_short!("executed"),), new_admin);
+    }
+
     /// Read the per-pair fee in basis points from persistent storage.
     ///
     /// Returns `0` (free) when the slot is absent — the documented
@@ -518,10 +557,7 @@ impl StableRouteRouter {
 
     /// Returns true iff the router is currently paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+        Self::paused(&env)
     }
 
     /// Resume after a pause. Admin-gated and idempotent.
@@ -615,13 +651,7 @@ impl StableRouteRouter {
         if env.ledger().timestamp() < eta {
             panic_with_error!(&env, RouterError::TimelockNotElapsed);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &caller.clone());
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.storage().persistent().remove(&DataKey::PendingAdminEta);
-        Self::bump_instance_ttl(&env);
-        env.events().publish((symbol_short!("executed"),), caller);
+        Self::finalize_admin_transfer(&env, caller);
     }
 
     /// Step 1 of admin handover. Current admin proposes a new admin;
@@ -675,14 +705,7 @@ impl StableRouteRouter {
         if env.ledger().timestamp() < eta {
             panic_with_error!(&env, RouterError::TimelockNotElapsed);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &new_admin.clone());
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.storage().persistent().remove(&DataKey::PendingAdminEta);
-        Self::bump_instance_ttl(&env);
-        env.events()
-            .publish((symbol_short!("executed"),), new_admin);
+        Self::finalize_admin_transfer(&env, new_admin);
     }
 
     /// Returns the admin set at `init`, if any.
@@ -703,14 +726,7 @@ impl StableRouteRouter {
     /// otherwise. Always call `register_pair` before configuring a
     /// corridor's fee, bounds, or liquidity.
     pub fn register_pair(env: Env, source: Symbol, destination: Symbol) {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, RouterError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         Self::require_admin(&env);
         if source == destination {
             panic_with_error!(&env, RouterError::SourceEqualsDestination);
@@ -734,14 +750,7 @@ impl StableRouteRouter {
     /// [`MAX_BATCH_SIZE`] entries to bound gas; exceeding it panics with
     /// [`RouterError::BatchTooLarge`].
     pub fn register_pairs(env: Env, pairs: Vec<(Symbol, Symbol)>) {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, RouterError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         Self::require_admin(&env);
         if pairs.is_empty() {
             panic_with_error!(&env, RouterError::EmptyBatch);
@@ -1241,14 +1250,7 @@ impl StableRouteRouter {
     /// [`RouterError::PairNotRegistered`] (#5) so the fee can never be
     /// configured for a corridor that was never (or no longer) enabled.
     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, RouterError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         Self::require_admin(&env);
         if fee_bps > MAX_FEE_BPS {
             panic_with_error!(&env, RouterError::FeeBpsTooHigh);
@@ -1273,14 +1275,7 @@ impl StableRouteRouter {
     /// [`RouterError::EmptyBatch`]. Capped at [`MAX_BATCH_SIZE`] entries;
     /// exceeding it panics with [`RouterError::BatchTooLarge`].
     pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, RouterError::ContractPaused);
-        }
+        Self::require_not_paused(&env);
         Self::require_admin(&env);
         if entries.is_empty() {
             panic_with_error!(&env, RouterError::EmptyBatch);
@@ -1348,18 +1343,11 @@ impl StableRouteRouter {
         // accidentally leak the lock.
         Self::enter_nonreentrant(&env);
 
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::ContractPaused);
+        if Self::paused(&env) {
+            Self::route_abort(&env, RouterError::ContractPaused);
         }
         if amount <= 0 {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::AmountMustBePositive);
+            Self::route_abort(&env, RouterError::AmountMustBePositive);
         }
 
         if !env
@@ -1368,18 +1356,15 @@ impl StableRouteRouter {
             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
             .unwrap_or(false)
         {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::PairNotRegistered);
+            Self::route_abort(&env, RouterError::PairNotRegistered);
         }
         let min_amount = Self::read_pair_min(&env, &source, &destination);
         if amount < min_amount {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::AmountBelowMin);
+            Self::route_abort(&env, RouterError::AmountBelowMin);
         }
         let max_amount = Self::read_pair_max(&env, &source, &destination);
         if amount > max_amount {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::AmountAboveMax);
+            Self::route_abort(&env, RouterError::AmountAboveMax);
         }
         let liquidity: i128 = env
             .storage()
@@ -1387,8 +1372,7 @@ impl StableRouteRouter {
             .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
             .unwrap_or(i128::MAX);
         if amount > liquidity {
-            Self::exit_nonreentrant(&env);
-            panic_with_error!(&env, RouterError::InsufficientLiquidity);
+            Self::route_abort(&env, RouterError::InsufficientLiquidity);
         }
 
         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
@@ -1711,6 +1695,28 @@ mod test {
                 &amount,
             );
             prop_assert_eq!(fee, 0, "zero fee_bps must produce zero fee");
+        }
+
+        /// Invariant: the contract's absolute-capped fee equals the pure
+        /// reference math (`compute_fee_pure`) for any amount, fee_bps, and
+        /// non-negative absolute cap. Exercises `apply_fee_cap` end to end
+        /// against the extracted, environment-free fee model.
+        #[test]
+        fn prop_capped_fee_matches_pure_math(
+            amount in 1i128..1_000_000_000_000_000_000_000_000i128,
+            fee_bps in 0u32..=MAX_FEE_BPS,
+            cap in 0i128..1_000_000_000_000_000_000i128,
+        ) {
+            let env = Env::default();
+            let client = setup_pair_with_fee(&env, fee_bps);
+            client.set_max_fee_absolute(&cap);
+            let expected = compute_fee_pure(amount, fee_bps, Some(cap));
+            let fee = client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &amount,
+            );
+            prop_assert_eq!(fee, expected);
         }
     }
 
