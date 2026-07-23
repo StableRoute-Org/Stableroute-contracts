@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace + with - in StableRouteRouter::compute_route_fee
+@@ -1391,17 +1391,17 @@
+             if let Some(last) = env
+                 .storage()
+                 .persistent()
+                 .get::<_, u64>(&DataKey::PairLastRouteAt(
+                     source.clone(),
+                     destination.clone(),
+                 ))
+             {
+-                if env.ledger().timestamp() < last + cooldown {
++                if env.ledger().timestamp() < last - /* ~ changed by cargo-mutants ~ */ cooldown {
+                     Self::exit_nonreentrant(&env);
+                     panic_with_error!(&env, RouterError::RouteCooldownActive);
+                 }
+             }
+         }
+ 
+         // EFFECTS: after all route guards above have passed, debit
+         // liquidity, write counters/timestamps, and emit events.

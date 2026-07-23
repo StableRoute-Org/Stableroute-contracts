@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ delete ! in StableRouteRouter::quote_route
+@@ -843,17 +843,17 @@
+         env: Env,
+         source: Symbol,
+         destination: Symbol,
+         amount: i128,
+     ) -> (i128, i128) {
+         if amount <= 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+-        if !env
++        if  /* ~ changed by cargo-mutants ~ */env
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             panic_with_error!(&env, RouterError::PairNotRegistered);
+         }
+         let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);

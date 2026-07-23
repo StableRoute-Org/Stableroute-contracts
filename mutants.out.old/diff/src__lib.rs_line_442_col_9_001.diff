@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::read_pair_max -> i128 with 1
+@@ -434,20 +434,17 @@
+     }
+ 
+     /// Read the per-pair maximum routable amount from persistent storage.
+     ///
+     /// Returns `i128::MAX` (no ceiling — unbounded) when the slot is
+     /// absent. This is the single source of truth for the
+     /// [`DataKey::PairMaxAmount`] sentinel value.
+     fn read_pair_max(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
+-            .unwrap_or(i128::MAX)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair reported liquidity from persistent storage.
+     ///
+     /// Returns `0` (no liquidity configured) when the slot is absent —
+     /// the documented default for getters and aggregate reads. Note that
+     /// [`Self::compute_route_fee`] intentionally uses `i128::MAX` as its
+     /// own unbounded sentinel (a context-dependent default, documented

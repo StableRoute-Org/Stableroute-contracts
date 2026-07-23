@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with < in StableRouteRouter::compute_route_fee
+@@ -1382,17 +1382,17 @@
+         // addition (last + cooldown) rather than subtraction to avoid any
+         // u64 underflow. `last + cooldown` cannot overflow u64 either:
+         // `set_pair_cooldown` rejects any `cooldown` above
+         // `MAX_COOLDOWN_SECS` (30 days), and `last` is a ledger timestamp
+         // (seconds since epoch) that would need to be within 30 days of
+         // `u64::MAX` — many orders of magnitude beyond any plausible
+         // ledger closing time — before this addition could wrap.
+         let cooldown = Self::read_pair_cooldown(&env, &source, &destination);
+-        if cooldown > 0 {
++        if cooldown < /* ~ changed by cargo-mutants ~ */ 0 {
+             if let Some(last) = env
+                 .storage()
+                 .persistent()
+                 .get::<_, u64>(&DataKey::PairLastRouteAt(
+                     source.clone(),
+                     destination.clone(),
+                 ))
+             {

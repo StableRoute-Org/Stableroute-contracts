@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace <= with > in StableRouteRouter::set_pair_max_amount
+@@ -1135,17 +1135,17 @@
+     /// Admin sets the per-pair maximum routable amount.
+     ///
+     /// Requires the pair to already be registered via
+     /// [`Self::register_pair`]; rejects an unregistered pair with
+     /// [`RouterError::PairNotRegistered`] (#5) so the maximum can never be
+     /// configured for a corridor that was never (or no longer) enabled.
+     pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
+         Self::require_admin(&env);
+-        if max_amount <= 0 {
++        if max_amount > /* ~ changed by cargo-mutants ~ */ 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+         Self::require_pair_registered(&env, &source, &destination);
+         env.storage()
+             .persistent()
+             .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
+     }
+ 

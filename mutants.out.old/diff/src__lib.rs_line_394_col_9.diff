@@ -1,0 +1,23 @@
+--- src/lib.rs
++++ replace StableRouteRouter::require_not_paused with ()
+@@ -386,19 +386,17 @@
+             .instance()
+             .get(&DataKey::Paused)
+             .unwrap_or(false)
+     }
+ 
+     /// Panic with [`RouterError::ContractPaused`] when the router is paused.
+     /// Shared by every state-changing, pause-gated entrypoint.
+     fn require_not_paused(env: &Env) {
+-        if Self::paused(env) {
+-            panic_with_error!(env, RouterError::ContractPaused);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Finalise an admin handover: install `new_admin`, clear the pending
+     /// slots, renew the instance TTL, and emit the `executed` event. Shared
+     /// tail of [`Self::accept_admin_transfer`] and
+     /// [`Self::force_admin_transfer`].
+     fn finalize_admin_transfer(env: &Env, new_admin: Address) {
+         env.storage().instance().set(&DataKey::Admin, &new_admin);

@@ -1,0 +1,23 @@
+--- src/lib.rs
++++ replace StableRouteRouter::bump_instance_ttl with ()
+@@ -310,19 +310,17 @@
+         admin
+     }
+ 
+     /// Renew the contract instance's TTL. Called after every write to a
+     /// hot-global instance slot (`Admin`, `PendingAdmin`, `Paused`) so the
+     /// instance — and therefore these singletons — never archives as long
+     /// as the contract keeps receiving admin/pause/transfer traffic.
+     fn bump_instance_ttl(env: &Env) {
+-        env.storage()
+-            .instance()
+-            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Require that `(source, destination)` was previously registered via
+     /// [`Self::register_pair`]; panics with
+     /// [`RouterError::PairNotRegistered`] otherwise.
+     ///
+     /// Every per-pair config setter (`set_pair_fee_bps`,
+     /// `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`)

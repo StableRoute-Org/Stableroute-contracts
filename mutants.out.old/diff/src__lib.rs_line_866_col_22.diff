@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace - with + in StableRouteRouter::quote_route
+@@ -858,17 +858,17 @@
+         }
+         let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
+         let fee = amount
+             .checked_mul(fee_bps as i128)
+             .map(|n| n / BPS_DENOMINATOR)
+             .unwrap_or(0);
+         let fee = Self::apply_fee_cap(&env, fee);
+         let fee = Self::apply_fee_floor(&env, fee);
+-        (fee, amount - fee)
++        (fee, amount + /* ~ changed by cargo-mutants ~ */ fee)
+     }
+ 
+     /// Read the most recent ledger timestamp at which `compute_route_fee`
+     /// touched this pair. None when never routed.
+     pub fn get_pair_last_route_at(env: Env, source: Symbol, destination: Symbol) -> Option<u64> {
+         env.storage()
+             .persistent()
+             .get(&DataKey::PairLastRouteAt(source, destination))

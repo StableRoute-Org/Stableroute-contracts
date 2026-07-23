@@ -1,0 +1,31 @@
+--- src/lib.rs
++++ replace StableRouteRouter::unregister_pair with ()
+@@ -1185,27 +1185,17 @@
+ 
+     /// Unregister a previously-registered pair. Admin-gated and idempotent.
+     ///
+     /// Clears the pair's min amount, max amount, and liquidity config slots so
+     /// re-registering the same corridor starts from documented defaults instead of reviving
+     /// stale config. The fee is preserved so a previously configured rate survives
+     /// unregister + re-register cycles.
+     pub fn unregister_pair(env: Env, source: Symbol, destination: Symbol) {
+-        Self::require_admin(&env);
+-        env.storage()
+-            .persistent()
+-            .remove(&DataKey::Pair(source.clone(), destination.clone()));
+-        Self::clear_pair_config(&env, source.clone(), destination.clone());
+-        env.events().publish(
+-            (symbol_short!("unreg"),),
+-            (source.clone(), destination.clone()),
+-        );
+-        env.events()
+-            .publish((symbol_short!("cfg_clr"),), (source, destination));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Explicitly reset a pair's operational-history metrics: `PairRouteCount`,
+     /// `PairVolume`, and `PairLastRouteAt`. Admin-gated.
+     ///
+     /// By default, `unregister_pair` deliberately preserves these metrics so a
+     /// pair's lifetime history survives a transient unregister/register cycle.
+     /// This entrypoint is the explicit, opt-in way to discard that history —

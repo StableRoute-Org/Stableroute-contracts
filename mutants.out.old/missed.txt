@@ -1,0 +1,18 @@
+src/lib.rs:318:9: replace StableRouteRouter::bump_instance_ttl with ()
+src/lib.rs:758:24: replace > with >= in StableRouteRouter::register_pairs
+src/lib.rs:888:26: replace > with == in StableRouteRouter::set_pair_cooldown
+src/lib.rs:888:26: replace > with >= in StableRouteRouter::set_pair_cooldown
+src/lib.rs:1010:20: replace < with <= in StableRouteRouter::set_min_fee_absolute
+src/lib.rs:1116:22: replace < with <= in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1165:23: replace < with <= in StableRouteRouter::set_pair_min_amount
+src/lib.rs:1179:9: replace StableRouteRouter::clear_pair_config with ()
+src/lib.rs:1283:26: replace > with >= in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1287:24: replace > with >= in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1390:21: replace > with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1390:21: replace > with < in StableRouteRouter::compute_route_fee
+src/lib.rs:1399:45: replace < with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1390:21: replace > with >= in StableRouteRouter::compute_route_fee
+src/lib.rs:1399:45: replace < with > in StableRouteRouter::compute_route_fee
+src/lib.rs:1399:45: replace < with <= in StableRouteRouter::compute_route_fee
+src/lib.rs:1399:52: replace + with * in StableRouteRouter::compute_route_fee
+src/lib.rs:1399:52: replace + with - in StableRouteRouter::compute_route_fee

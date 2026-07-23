@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::is_paused -> bool with true
+@@ -552,17 +552,17 @@
+     /// guaranteeing an attacker can never seize the admin role via `init`.
+     pub fn init(env: Env, admin: Address) {
+         let _ = admin;
+         panic_with_error!(&env, RouterError::AlreadyInitialized);
+     }
+ 
+     /// Returns true iff the router is currently paused.
+     pub fn is_paused(env: Env) -> bool {
+-        Self::paused(&env)
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Resume after a pause. Admin-gated and idempotent.
+     pub fn unpause(env: Env) {
+         Self::require_admin(&env);
+         env.storage().instance().set(&DataKey::Paused, &false);
+         Self::bump_instance_ttl(&env);
+         env.events().publish((symbol_short!("paused"),), false);

@@ -1,0 +1,38 @@
+--- src/lib.rs
++++ replace StableRouteRouter::force_admin_transfer with ()
+@@ -683,34 +683,17 @@
+     /// Force-complete an admin handover after the timelock has elapsed,
+     /// without requiring the new admin to call `accept_admin_transfer`.
+     ///
+     /// Admin-gated. Requires that `propose_admin_transfer` was already
+     /// called with the same `new_admin` and that the timelock delay has
+     /// elapsed. Emits the same `executed` event as `accept_admin_transfer`
+     /// so indexers can treat it identically.
+     pub fn force_admin_transfer(env: Env, new_admin: Address) {
+-        Self::require_admin(&env);
+-        let pending: Address = env
+-            .storage()
+-            .instance()
+-            .get(&DataKey::PendingAdmin)
+-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
+-        if pending != new_admin {
+-            panic_with_error!(&env, RouterError::NotPendingAdmin);
+-        }
+-        let eta: u64 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::PendingAdminEta)
+-            .unwrap_or(0);
+-        if env.ledger().timestamp() < eta {
+-            panic_with_error!(&env, RouterError::TimelockNotElapsed);
+-        }
+-        Self::finalize_admin_transfer(&env, new_admin);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns the admin set at `init`, if any.
+     pub fn get_admin(env: Env) -> Option<Address> {
+         env.storage().instance().get(&DataKey::Admin)
+     }
+ 
+     /// Register `(source, destination)` as a recognised route.

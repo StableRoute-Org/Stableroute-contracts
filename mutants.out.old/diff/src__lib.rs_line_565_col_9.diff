@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::unpause with ()
+@@ -557,20 +557,17 @@
+ 
+     /// Returns true iff the router is currently paused.
+     pub fn is_paused(env: Env) -> bool {
+         Self::paused(&env)
+     }
+ 
+     /// Resume after a pause. Admin-gated and idempotent.
+     pub fn unpause(env: Env) {
+-        Self::require_admin(&env);
+-        env.storage().instance().set(&DataKey::Paused, &false);
+-        Self::bump_instance_ttl(&env);
+-        env.events().publish((symbol_short!("paused"),), false);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin pauses the router. All state-changing entrypoints will
+     /// then panic with ContractPaused.
+     pub fn pause(env: Env) {
+         Self::require_admin(&env);
+         env.storage().instance().set(&DataKey::Paused, &true);
+         Self::bump_instance_ttl(&env);

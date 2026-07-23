@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_fee_recipient -> Option<Address> with None
+@@ -939,17 +939,17 @@
+         Self::require_admin(&env);
+         env.storage()
+             .persistent()
+             .set(&DataKey::FeeRecipient, &recipient);
+     }
+ 
+     /// Read the configured fee recipient, if any.
+     pub fn get_fee_recipient(env: Env) -> Option<Address> {
+-        env.storage().persistent().get(&DataKey::FeeRecipient)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Clamp `fee` to the configured absolute ceiling when one is set.
+     /// Both the relative `MAX_FEE_BPS` bound and this absolute bound apply;
+     /// the tighter of the two wins. No-op when no absolute cap is configured.
+     fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
+         match env
+             .storage()

@@ -1,0 +1,227 @@
+
+*** src/lib.rs:789:9: replace StableRouteRouter::get_pair_info -> PairInfo with Default::default()
+
+*** mutation diff:
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_info -> PairInfo with Default::default()
+@@ -781,29 +781,17 @@
+             return false;
+         }
+         Self::read_pair_liquidity(&env, &source, &destination) > 0
+     }
+ 
+     /// Single round-trip aggregate read for the dashboard. Returns
+     /// every per-pair slot in one shot.
+     pub fn get_pair_info(env: Env, source: Symbol, destination: Symbol) -> PairInfo {
+-        let s = env.storage().persistent();
+-        PairInfo {
+-            registered: s
+-                .get(&DataKey::Pair(source.clone(), destination.clone()))
+-                .unwrap_or(false),
+-            fee_bps: Self::read_pair_fee_bps(&env, &source, &destination),
+-            min_amount: Self::read_pair_min(&env, &source, &destination),
+-            max_amount: Self::read_pair_max(&env, &source, &destination),
+-            liquidity: Self::read_pair_liquidity(&env, &source, &destination),
+-            last_route_at: s
+-                .get(&DataKey::PairLastRouteAt(source, destination))
+-                .unwrap_or(0),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Extended aggregate read including newer per-pair slots that were
+     /// added after the original [`PairInfo`] shipped. Returns every
+     /// per-pair slot in a single round-trip so dashboards avoid issuing
+     /// separate calls for cooldown, route count, and volume.
+     ///
+     /// Defaults follow the same sentinel conventions as the individual
+
+
+*** /home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=stableroute-contracts@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh version_check v0.9.5
+       Fresh cfg-if v1.0.4
+       Fresh typenum v1.20.1
+       Fresh libc v0.2.186
+       Fresh serde_core v1.0.228
+       Fresh serde_derive v1.0.228
+       Fresh serde v1.0.228
+       Fresh zmij v1.0.21
+       Fresh zeroize_derive v1.5.0
+       Fresh itoa v1.0.18
+       Fresh memchr v2.8.2
+       Fresh serde_json v1.0.150
+       Fresh zeroize v1.9.0
+       Fresh subtle v2.6.1
+       Fresh autocfg v1.5.1
+       Fresh crate-git-revision v0.0.6
+       Fresh const-oid v0.9.6
+       Fresh getrandom v0.2.17
+       Fresh rand_core v0.6.4
+       Fresh strsim v0.11.1
+       Fresh ident_case v1.0.1
+       Fresh zerocopy v0.8.52
+       Fresh cpufeatures v0.2.17
+       Fresh darling_core v0.23.0
+       Fresh darling_macro v0.23.0
+       Fresh semver v1.0.28
+       Fresh darling v0.23.0
+       Fresh num-traits v0.2.19
+       Fresh generic-array v0.14.9
+       Fresh ppv-lite86 v0.2.21
+       Fresh dyn-clone v1.0.20
+       Fresh schemars v0.8.22
+       Fresh serde_with_macros v3.21.0
+       Fresh syn v1.0.109
+       Fresh data-encoding v2.11.0
+       Fresh crypto-common v0.1.6
+       Fresh block-buffer v0.10.4
+       Fresh hex v0.4.3
+       Fresh once_cell v1.21.4
+       Fresh digest v0.10.7
+       Fresh stellar-strkey v0.0.13
+       Fresh paste v1.0.15
+       Fresh rand_chacha v0.3.1
+       Fresh cfg_eval v0.1.2
+       Fresh ethnum v1.5.3
+       Fresh escape-bytes v0.1.1
+       Fresh rand v0.8.6
+       Fresh num-integer v0.1.46
+       Fresh num-bigint v0.4.6
+       Fresh ark-std v0.4.0
+       Fresh ark-serialize-derive v0.4.2
+       Fresh rustc_version v0.4.1
+       Fresh ff v0.13.1
+       Fresh der v0.7.10
+       Fresh hashbrown v0.17.1
+       Fresh either v1.16.0
+       Fresh base16ct v0.2.0
+       Fresh equivalent v1.0.2
+       Fresh indexmap v2.14.0
+       Fresh sec1 v0.7.3
+       Fresh itertools v0.10.5
+       Fresh group v0.13.0
+       Fresh ark-serialize v0.4.2
+       Fresh ahash v0.8.12
+       Fresh ark-ff-macros v0.4.2
+       Fresh derivative v2.2.0
+       Fresh ark-ff-asm v0.4.2
+       Fresh sha2 v0.10.9
+       Fresh crypto-bigint v0.5.5
+       Fresh signature v2.2.0
+       Fresh base64 v0.22.1
+       Fresh elliptic-curve v0.13.8
+       Fresh ark-ff v0.4.2
+       Fresh hashbrown v0.13.2
+       Fresh wasmparser v0.116.1
+       Fresh hmac v0.12.1
+       Fresh fnv v1.0.7
+       Fresh rfc6979 v0.4.0
+       Fresh ark-poly v0.4.2
+       Fresh libm v0.2.16
+       Fresh soroban-env-macros v25.0.1
+       Fresh thiserror-impl v1.0.69
+       Fresh derive_arbitrary v1.3.2
+       Fresh num-derive v0.4.2
+       Fresh indexmap-nostd v0.4.0
+       Fresh static_assertions v1.1.0
+       Fresh downcast-rs v1.2.1
+       Fresh wasmi_core v0.13.0
+       Fresh wasmparser-nostd v0.100.2
+       Fresh arbitrary v1.3.2
+       Fresh thiserror v1.0.69
+       Fresh ark-ec v0.4.2
+       Fresh ecdsa v0.16.9
+       Fresh serde_with v3.21.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh smallvec v1.15.2
+       Fresh wasmi_arena v0.4.1
+       Fresh spin v0.9.8
+       Fresh soroban-wasmi v0.31.1-soroban.20.0.1
+       Fresh curve25519-dalek v4.1.3
+       Fresh stellar-xdr v25.0.0
+       Fresh getrandom v0.3.4
+       Fresh darling_core v0.20.11
+       Fresh primeorder v0.13.6
+       Fresh ed25519 v2.2.3
+       Fresh keccak v0.1.6
+       Fresh byteorder v1.5.0
+       Fresh hash32 v0.3.1
+       Fresh sha3 v0.10.9
+       Fresh ed25519-dalek v2.2.0
+       Fresh p256 v0.13.2
+       Fresh darling_macro v0.20.11
+       Fresh rand_core v0.9.5
+       Fresh prettyplease v0.2.37
+       Fresh k256 v0.13.4
+       Fresh ark-bn254 v0.4.0
+       Fresh ark-bls12-381 v0.4.0
+       Fresh soroban-spec v25.3.1
+       Fresh soroban-builtin-sdk-macros v25.0.1
+       Fresh dtor-proc-macro v0.0.6
+       Fresh bitflags v2.13.0
+       Fresh linux-raw-sys v0.12.1
+       Fresh hex-literal v0.4.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh heapless v0.8.0
+       Fresh soroban-env-host v25.0.1
+       Fresh rustix v1.1.4
+       Fresh dtor v0.1.1
+       Fresh soroban-spec-rust v25.3.1
+       Fresh darling v0.20.11
+       Fresh soroban-env-common v25.0.1
+       Fresh getrandom v0.4.3
+       Fresh macro-string v0.1.4
+       Fresh ctor-proc-macro v0.0.6
+       Fresh fastrand v2.4.1
+       Fresh heck v0.5.0
+       Fresh soroban-sdk-macros v25.3.1
+       Fresh tempfile v3.27.0
+       Fresh ctor v0.5.0
+       Fresh stellar-strkey v0.0.16
+       Fresh soroban-ledger-snapshot v25.3.1
+       Fresh bytes-lit v0.0.5
+       Fresh wait-timeout v0.2.1
+       Fresh visibility v0.1.1
+       Fresh quick-error v1.2.3
+       Fresh bit-vec v0.8.0
+       Fresh bit-set v0.8.0
+       Fresh rusty-fork v0.3.1
+       Fresh soroban-sdk v25.3.1
+       Fresh rand v0.9.4
+       Fresh rand_xorshift v0.4.0
+       Fresh rand_chacha v0.9.0
+       Fresh regex-syntax v0.8.11
+       Fresh unarray v0.1.4
+       Fresh proptest v1.10.0
+       Dirty stableroute-contracts v0.1.0 (/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp): the file `src/lib.rs` has changed (1784786895.653654105s, 40s after last build at 1784786855.861656439s)
+   Compiling stableroute-contracts v0.1.0 (/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp)
+     Running `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type cdylib --crate-type rlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=cb8fb75cbd7555e7 --out-dir /tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib`
+     Running `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a1cc0ef00f761151 -C extra-filename=-776fcdbe979f002d --out-dir /tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps --extern proptest=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libproptest-4fb65fd7ef525dcb.rlib --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib`
+error[E0277]: the trait bound `PairInfo: Default` is not satisfied
+   --> src/lib.rs:789:9
+    |
+789 |         Default::default() /* ~ changed by cargo-mutants ~ */
+    |         ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `PairInfo`
+    |
+help: consider annotating `PairInfo` with `#[derive(Default)]`
+    |
+ 18 + #[derive(Default)]
+ 19 | pub struct PairInfo {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `stableroute-contracts` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type cdylib --crate-type rlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=cb8fb75cbd7555e7 --out-dir /tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `stableroute-contracts` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a1cc0ef00f761151 -C extra-filename=-776fcdbe979f002d --out-dir /tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps --extern proptest=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libproptest-4fb65fd7ef525dcb.rlib --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-Ziy3B3.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib` (exit status: 1)
+
+*** result: Failure(101)

@@ -1,0 +1,33 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_info -> PairInfo with Default::default()
+@@ -781,29 +781,17 @@
+             return false;
+         }
+         Self::read_pair_liquidity(&env, &source, &destination) > 0
+     }
+ 
+     /// Single round-trip aggregate read for the dashboard. Returns
+     /// every per-pair slot in one shot.
+     pub fn get_pair_info(env: Env, source: Symbol, destination: Symbol) -> PairInfo {
+-        let s = env.storage().persistent();
+-        PairInfo {
+-            registered: s
+-                .get(&DataKey::Pair(source.clone(), destination.clone()))
+-                .unwrap_or(false),
+-            fee_bps: Self::read_pair_fee_bps(&env, &source, &destination),
+-            min_amount: Self::read_pair_min(&env, &source, &destination),
+-            max_amount: Self::read_pair_max(&env, &source, &destination),
+-            liquidity: Self::read_pair_liquidity(&env, &source, &destination),
+-            last_route_at: s
+-                .get(&DataKey::PairLastRouteAt(source, destination))
+-                .unwrap_or(0),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Extended aggregate read including newer per-pair slots that were
+     /// added after the original [`PairInfo`] shipped. Returns every
+     /// per-pair slot in a single round-trip so dashboards avoid issuing
+     /// separate calls for cooldown, route count, and volume.
+     ///
+     /// Defaults follow the same sentinel conventions as the individual

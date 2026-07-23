@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::route_tag -> BytesN<32> with Default::default()
+@@ -1482,20 +1482,17 @@
+     ///   `route_tag(USDC, EURC) != route_tag(EURC, USDC)`. Each leg of a pair
+     ///   gets its own identifier.
+     ///
+     /// Returns the digest as a [`BytesN<32>`].
+     pub fn route_tag(env: Env, source: Symbol, destination: Symbol) -> BytesN<32> {
+         // Build the pre-image deterministically: the XDR encoding of `source`
+         // followed by the XDR encoding of `destination`. Ordering the appends
+         // this way is what makes the tag direction-sensitive.
+-        let mut buf = Bytes::new(&env);
+-        buf.append(&source.to_xdr(&env));
+-        buf.append(&destination.to_xdr(&env));
+-        env.crypto().keccak256(&buf).to_bytes()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Replace the contract's WASM in-place so the router can be patched
+     /// without losing pair state. Admin-gated; emits an `upgraded` event
+     /// carrying the new hash so indexers and watchers can audit upgrades.
+     ///
+     /// ## Trade-off: not paused-gated
+     ///

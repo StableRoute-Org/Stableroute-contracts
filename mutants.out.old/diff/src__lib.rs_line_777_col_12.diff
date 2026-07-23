@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ delete ! in StableRouteRouter::is_pair_active
+@@ -769,17 +769,17 @@
+                 .publish((symbol_short!("pair_reg"),), (source, destination));
+         }
+     }
+ 
+     /// Returns true iff the pair is registered AND has non-zero
+     /// reported liquidity. Useful as a quick is-routable check.
+     pub fn is_pair_active(env: Env, source: Symbol, destination: Symbol) -> bool {
+         let s = env.storage().persistent();
+-        if !s
++        if  /* ~ changed by cargo-mutants ~ */s
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             return false;
+         }
+         Self::read_pair_liquidity(&env, &source, &destination) > 0
+     }
+ 

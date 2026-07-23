@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::paused -> bool with false
+@@ -377,20 +377,17 @@
+     fn route_abort(env: &Env, err: RouterError) -> ! {
+         Self::exit_nonreentrant(env);
+         panic_with_error!(env, err)
+     }
+ 
+     /// Read the paused flag from the instance-storage hot global.
+     /// Single source of truth for the `Paused` sentinel (absent → `false`).
+     fn paused(env: &Env) -> bool {
+-        env.storage()
+-            .instance()
+-            .get(&DataKey::Paused)
+-            .unwrap_or(false)
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Panic with [`RouterError::ContractPaused`] when the router is paused.
+     /// Shared by every state-changing, pause-gated entrypoint.
+     fn require_not_paused(env: &Env) {
+         if Self::paused(env) {
+             panic_with_error!(env, RouterError::ContractPaused);
+         }

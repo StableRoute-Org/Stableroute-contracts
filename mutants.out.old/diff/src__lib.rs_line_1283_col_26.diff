@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with == in StableRouteRouter::set_pair_fees_bps
+@@ -1275,17 +1275,17 @@
+     /// [`RouterError::EmptyBatch`]. Capped at [`MAX_BATCH_SIZE`] entries;
+     /// exceeding it panics with [`RouterError::BatchTooLarge`].
+     pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
+         Self::require_not_paused(&env);
+         Self::require_admin(&env);
+         if entries.is_empty() {
+             panic_with_error!(&env, RouterError::EmptyBatch);
+         }
+-        if entries.len() > MAX_BATCH_SIZE {
++        if entries.len() == /* ~ changed by cargo-mutants ~ */ MAX_BATCH_SIZE {
+             panic_with_error!(&env, RouterError::BatchTooLarge);
+         }
+         for (source, destination, fee_bps) in entries.iter() {
+             if fee_bps > MAX_FEE_BPS {
+                 panic_with_error!(&env, RouterError::FeeBpsTooHigh);
+             }
+             Self::require_pair_registered(&env, &source, &destination);
+             env.storage().persistent().set(

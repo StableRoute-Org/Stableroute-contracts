@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::remove_oracle with ()
+@@ -1063,20 +1063,17 @@
+     /// (`None` on a no-op) so indexers can audit revocations.
+     /// Removes the configured oracle.
+     ///
+     /// Only the admin may call this function.
+     ///
+     /// After removal, liquidity updates cannot be performed until a new oracle
+     /// is configured.
+     pub fn remove_oracle(env: Env) {
+-        Self::require_admin(&env);
+-        let removed: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
+-        env.storage().persistent().remove(&DataKey::Oracle);
+-        env.events().publish((symbol_short!("orac_rm"),), removed);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Set the reported liquidity for a pair (source units).
+     ///
+     /// Dual-authorized: `caller` must be **either** the admin **or** the
+     /// configured oracle, and must `require_auth()`. This implements
+     /// least privilege — the frequently rotated oracle key can keep the
+     /// liquidity feed fresh without holding governance power. When no

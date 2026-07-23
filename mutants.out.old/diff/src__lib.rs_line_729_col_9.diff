@@ -1,0 +1,30 @@
+--- src/lib.rs
++++ replace StableRouteRouter::register_pair with ()
+@@ -721,26 +721,17 @@
+     ///
+     /// **Registration-first invariant:** `set_pair_fee_bps`,
+     /// `set_pair_min_amount`, `set_pair_max_amount`, and
+     /// `set_pair_liquidity` all require the pair to already be registered
+     /// here, and panic with [`RouterError::PairNotRegistered`] (#5)
+     /// otherwise. Always call `register_pair` before configuring a
+     /// corridor's fee, bounds, or liquidity.
+     pub fn register_pair(env: Env, source: Symbol, destination: Symbol) {
+-        Self::require_not_paused(&env);
+-        Self::require_admin(&env);
+-        if source == destination {
+-            panic_with_error!(&env, RouterError::SourceEqualsDestination);
+-        }
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+-        env.events()
+-            .publish((symbol_short!("pair_reg"),), (source, destination));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Register multiple `(source, destination)` pairs in a single
+     /// admin-gated call. Each entry is validated identically to
+     /// [`Self::register_pair`] and gets its own `pair_reg` event.
+     ///
+     /// **All-or-nothing:** if any entry fails validation the entire
+     /// transaction is rolled back (Soroban transactions are atomic), so

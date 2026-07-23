@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_timelock -> u64 with 0
+@@ -575,20 +575,17 @@
+         env.storage().instance().set(&DataKey::Paused, &true);
+         Self::bump_instance_ttl(&env);
+         env.events().publish((symbol_short!("paused"),), true);
+     }
+ 
+     /// Read the configured governance timelock delay, in seconds
+     /// (0 when unset — handover is instant).
+     pub fn get_timelock(env: Env) -> u64 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::Timelock)
+-            .unwrap_or(0)
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the governance timelock delay (seconds). Applies to the
+     /// **next** `propose_admin_transfer`; already-queued actions keep the
+     /// eta they were stamped with. Pass 0 to disable (instant handover).
+     pub fn set_timelock(env: Env, delay_seconds: u64) {
+         Self::require_admin(&env);
+         env.storage()

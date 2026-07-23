@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace < with <= in StableRouteRouter::set_pair_liquidity
+@@ -1108,17 +1108,17 @@
+             .storage()
+             .instance()
+             .get(&DataKey::Admin)
+             .unwrap_or_else(|| panic_with_error!(&env, RouterError::NotInitialized));
+         let oracle: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
+         if caller != admin && Some(caller.clone()) != oracle {
+             panic_with_error!(&env, RouterError::NotAuthorized);
+         }
+-        if liquidity < 0 {
++        if liquidity <= /* ~ changed by cargo-mutants ~ */ 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+         Self::require_pair_registered(&env, &source, &destination);
+         env.storage().persistent().set(
+             &DataKey::PairLiquidity(source.clone(), destination.clone()),
+             &liquidity,
+         );
+         env.events().publish(

@@ -1,0 +1,33 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_pair_cooldown with ()
+@@ -879,29 +879,17 @@
+     /// While set to a non-zero value, `compute_route_fee` rejects a call
+     /// for the pair until at least `cooldown_secs` seconds have elapsed
+     /// since the pair's last successful route (`PairLastRouteAt`).
+     /// Setting `0` (the default) disables the rate limit for the pair.
+     /// Rejects values above [`MAX_COOLDOWN_SECS`] with
+     /// [`RouterError::CooldownTooLarge`] so an absurdly large value
+     /// (e.g. `u64::MAX`) cannot permanently brick the corridor.
+     pub fn set_pair_cooldown(env: Env, source: Symbol, destination: Symbol, cooldown_secs: u64) {
+-        Self::require_admin(&env);
+-        if cooldown_secs > MAX_COOLDOWN_SECS {
+-            panic_with_error!(&env, RouterError::CooldownTooLarge);
+-        }
+-        Self::require_pair_registered(&env, &source, &destination);
+-        env.storage().persistent().set(
+-            &DataKey::PairCooldown(source.clone(), destination.clone()),
+-            &cooldown_secs,
+-        );
+-        env.events().publish(
+-            (symbol_short!("cd_set"),),
+-            (source, destination, cooldown_secs),
+-        );
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair route cooldown in seconds (0 when absent,
+     /// meaning the rate limit is disabled for the pair).
+     pub fn get_pair_cooldown(env: Env, source: Symbol, destination: Symbol) -> u64 {
+         Self::read_pair_cooldown(&env, &source, &destination)
+     }
+ 

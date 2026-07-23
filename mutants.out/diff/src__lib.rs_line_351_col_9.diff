@@ -1,0 +1,31 @@
+--- src/lib.rs
++++ replace StableRouteRouter::enter_nonreentrant with ()
+@@ -343,27 +343,17 @@
+     }
+ 
+     /// Acquire the reentrancy lock; panics [`RouterError::ReentrantCall`]
+     /// if already held. Paired with [`Self::exit_nonreentrant`] on every
+     /// return path so that a re-entrant invocation (for example via a
+     /// future malicious token callback) is rejected instead of operating
+     /// on partially-applied effects.
+     fn enter_nonreentrant(env: &Env) {
+-        if env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::ReentrancyLock)
+-            .unwrap_or(false)
+-        {
+-            panic_with_error!(env, RouterError::ReentrantCall);
+-        }
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::ReentrancyLock, &true);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Release the reentrancy lock. Must be called before every return
+     /// from a guarded entrypoint, including the success path, so that
+     /// back-to-back calls work.
+     fn exit_nonreentrant(env: &Env) {
+         env.storage()
+             .persistent()

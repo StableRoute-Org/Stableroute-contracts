@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::version -> Symbol with Default::default()
+@@ -470,17 +470,17 @@
+         env.storage()
+             .persistent()
+             .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
+             .unwrap_or(0)
+     }
+ 
+     /// Returns the router contract version.
+     pub fn version(_env: Env) -> Symbol {
+-        symbol_short!("ROUTER_V2")
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the persisted schema version, or 1 if absent (the implicit
+     /// pre-migration default).
+     pub fn get_schema_version(env: Env) -> u32 {
+         env.storage()
+             .persistent()
+             .get(&DataKey::SchemaVersion)

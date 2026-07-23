@@ -1,0 +1,32 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_pair_fee_bps with ()
+@@ -1245,28 +1245,17 @@
+     /// [`RouterError::FeeBpsTooHigh`]. Idempotent: setting the same
+     /// fee twice is a re-assert and harmless.
+     ///
+     /// Requires the pair to already be registered via
+     /// [`Self::register_pair`]; rejects an unregistered pair with
+     /// [`RouterError::PairNotRegistered`] (#5) so the fee can never be
+     /// configured for a corridor that was never (or no longer) enabled.
+     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
+-        Self::require_not_paused(&env);
+-        Self::require_admin(&env);
+-        if fee_bps > MAX_FEE_BPS {
+-            panic_with_error!(&env, RouterError::FeeBpsTooHigh);
+-        }
+-        Self::require_pair_registered(&env, &source, &destination);
+-        env.storage().persistent().set(
+-            &DataKey::PairFeeBps(source.clone(), destination.clone()),
+-            &fee_bps,
+-        );
+-        env.events()
+-            .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Set the routing fee in basis points for multiple registered pairs
+     /// in a single admin-gated call. Each entry is validated identically
+     /// to [`Self::set_pair_fee_bps`] and gets its own `fee_set` event.
+     ///
+     /// **All-or-nothing:** if any entry fails validation the entire
+     /// transaction is rolled back (Soroban transactions are atomic), so

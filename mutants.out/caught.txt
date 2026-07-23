@@ -1,0 +1,171 @@
+src/lib.rs:351:9: replace StableRouteRouter::enter_nonreentrant with ()
+src/lib.rs:368:9: replace StableRouteRouter::exit_nonreentrant with ()
+src/lib.rs:385:9: replace StableRouteRouter::paused -> bool with true
+src/lib.rs:385:9: replace StableRouteRouter::paused -> bool with false
+src/lib.rs:394:9: replace StableRouteRouter::require_not_paused with ()
+src/lib.rs:404:9: replace StableRouteRouter::finalize_admin_transfer with ()
+src/lib.rs:418:9: replace StableRouteRouter::read_pair_fee_bps -> u32 with 0
+src/lib.rs:418:9: replace StableRouteRouter::read_pair_fee_bps -> u32 with 1
+src/lib.rs:430:9: replace StableRouteRouter::read_pair_min -> i128 with 0
+src/lib.rs:430:9: replace StableRouteRouter::read_pair_min -> i128 with 1
+src/lib.rs:335:12: delete ! in StableRouteRouter::require_pair_registered
+src/lib.rs:430:9: replace StableRouteRouter::read_pair_min -> i128 with -1
+src/lib.rs:442:9: replace StableRouteRouter::read_pair_max -> i128 with 0
+src/lib.rs:442:9: replace StableRouteRouter::read_pair_max -> i128 with 1
+src/lib.rs:442:9: replace StableRouteRouter::read_pair_max -> i128 with -1
+src/lib.rs:335:9: replace StableRouteRouter::require_pair_registered with ()
+src/lib.rs:458:9: replace StableRouteRouter::read_pair_liquidity -> i128 with 0
+src/lib.rs:458:9: replace StableRouteRouter::read_pair_liquidity -> i128 with 1
+src/lib.rs:470:9: replace StableRouteRouter::read_pair_cooldown -> u64 with 0
+src/lib.rs:458:9: replace StableRouteRouter::read_pair_liquidity -> i128 with -1
+src/lib.rs:470:9: replace StableRouteRouter::read_pair_cooldown -> u64 with 1
+src/lib.rs:484:9: replace StableRouteRouter::get_schema_version -> u32 with 0
+src/lib.rs:484:9: replace StableRouteRouter::get_schema_version -> u32 with 1
+src/lib.rs:539:9: replace StableRouteRouter::__constructor with ()
+src/lib.rs:515:9: replace StableRouteRouter::migrate_v1_to_v2 with ()
+src/lib.rs:521:20: replace != with == in StableRouteRouter::migrate_v1_to_v2
+src/lib.rs:554:9: replace StableRouteRouter::init with ()
+src/lib.rs:560:9: replace StableRouteRouter::is_paused -> bool with true
+src/lib.rs:560:9: replace StableRouteRouter::is_paused -> bool with false
+src/lib.rs:565:9: replace StableRouteRouter::unpause with ()
+src/lib.rs:583:9: replace StableRouteRouter::get_timelock -> u64 with 0
+src/lib.rs:574:9: replace StableRouteRouter::pause with ()
+src/lib.rs:593:9: replace StableRouteRouter::set_timelock with ()
+src/lib.rs:583:9: replace StableRouteRouter::get_timelock -> u64 with 1
+src/lib.rs:602:9: replace StableRouteRouter::get_pending_admin_eta -> Option<u64> with None
+src/lib.rs:602:9: replace StableRouteRouter::get_pending_admin_eta -> Option<u64> with Some(0)
+src/lib.rs:608:9: replace StableRouteRouter::cancel_admin_transfer with ()
+src/lib.rs:602:9: replace StableRouteRouter::get_pending_admin_eta -> Option<u64> with Some(1)
+src/lib.rs:616:9: replace StableRouteRouter::get_pending_admin -> Option<Address> with None
+src/lib.rs:641:20: replace != with == in StableRouteRouter::accept_admin_transfer
+src/lib.rs:635:9: replace StableRouteRouter::accept_admin_transfer with ()
+src/lib.rs:651:37: replace < with == in StableRouteRouter::accept_admin_transfer
+src/lib.rs:651:37: replace < with > in StableRouteRouter::accept_admin_transfer
+src/lib.rs:651:37: replace < with <= in StableRouteRouter::accept_admin_transfer
+src/lib.rs:665:9: replace StableRouteRouter::propose_admin_transfer with ()
+src/lib.rs:691:9: replace StableRouteRouter::force_admin_transfer with ()
+src/lib.rs:697:20: replace != with == in StableRouteRouter::force_admin_transfer
+src/lib.rs:705:37: replace < with == in StableRouteRouter::force_admin_transfer
+src/lib.rs:705:37: replace < with > in StableRouteRouter::force_admin_transfer
+src/lib.rs:705:37: replace < with <= in StableRouteRouter::force_admin_transfer
+src/lib.rs:713:9: replace StableRouteRouter::get_admin -> Option<Address> with None
+src/lib.rs:731:19: replace == with != in StableRouteRouter::register_pair
+src/lib.rs:729:9: replace StableRouteRouter::register_pair with ()
+src/lib.rs:753:9: replace StableRouteRouter::register_pairs with ()
+src/lib.rs:758:24: replace > with == in StableRouteRouter::register_pairs
+src/lib.rs:758:24: replace > with < in StableRouteRouter::register_pairs
+src/lib.rs:762:23: replace == with != in StableRouteRouter::register_pairs
+src/lib.rs:776:9: replace StableRouteRouter::is_pair_active -> bool with true
+src/lib.rs:776:9: replace StableRouteRouter::is_pair_active -> bool with false
+src/lib.rs:777:12: delete ! in StableRouteRouter::is_pair_active
+src/lib.rs:783:64: replace > with == in StableRouteRouter::is_pair_active
+src/lib.rs:783:64: replace > with < in StableRouteRouter::is_pair_active
+src/lib.rs:783:64: replace > with >= in StableRouteRouter::is_pair_active
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (0, 0)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (0, 1)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (0, -1)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (1, 0)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (1, 1)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (-1, 0)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (1, -1)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (-1, 1)
+src/lib.rs:848:9: replace StableRouteRouter::quote_route -> (i128, i128) with (-1, -1)
+src/lib.rs:848:19: replace <= with > in StableRouteRouter::quote_route
+src/lib.rs:851:12: delete ! in StableRouteRouter::quote_route
+src/lib.rs:862:24: replace / with % in StableRouteRouter::quote_route
+src/lib.rs:862:24: replace / with * in StableRouteRouter::quote_route
+src/lib.rs:866:22: replace - with + in StableRouteRouter::quote_route
+src/lib.rs:866:22: replace - with / in StableRouteRouter::quote_route
+src/lib.rs:872:9: replace StableRouteRouter::get_pair_last_route_at -> Option<u64> with Some(0)
+src/lib.rs:872:9: replace StableRouteRouter::get_pair_last_route_at -> Option<u64> with None
+src/lib.rs:872:9: replace StableRouteRouter::get_pair_last_route_at -> Option<u64> with Some(1)
+src/lib.rs:887:9: replace StableRouteRouter::set_pair_cooldown with ()
+src/lib.rs:888:26: replace > with < in StableRouteRouter::set_pair_cooldown
+src/lib.rs:905:9: replace StableRouteRouter::get_pair_cooldown -> u64 with 0
+src/lib.rs:905:9: replace StableRouteRouter::get_pair_cooldown -> u64 with 1
+src/lib.rs:910:9: replace StableRouteRouter::get_total_routes_all_time -> u64 with 0
+src/lib.rs:920:9: replace StableRouteRouter::get_pair_route_count -> u64 with 0
+src/lib.rs:910:9: replace StableRouteRouter::get_total_routes_all_time -> u64 with 1
+src/lib.rs:930:9: replace StableRouteRouter::get_pair_volume -> i128 with 0
+src/lib.rs:920:9: replace StableRouteRouter::get_pair_route_count -> u64 with 1
+src/lib.rs:930:9: replace StableRouteRouter::get_pair_volume -> i128 with 1
+src/lib.rs:930:9: replace StableRouteRouter::get_pair_volume -> i128 with -1
+src/lib.rs:939:9: replace StableRouteRouter::set_fee_recipient with ()
+src/lib.rs:947:9: replace StableRouteRouter::get_fee_recipient -> Option<Address> with None
+src/lib.rs:954:9: replace StableRouteRouter::apply_fee_cap -> i128 with 0
+src/lib.rs:954:9: replace StableRouteRouter::apply_fee_cap -> i128 with 1
+src/lib.rs:954:9: replace StableRouteRouter::apply_fee_cap -> i128 with -1
+src/lib.rs:966:9: replace StableRouteRouter::get_max_fee_absolute -> Option<i128> with None
+src/lib.rs:966:9: replace StableRouteRouter::get_max_fee_absolute -> Option<i128> with Some(0)
+src/lib.rs:966:9: replace StableRouteRouter::get_max_fee_absolute -> Option<i128> with Some(1)
+src/lib.rs:966:9: replace StableRouteRouter::get_max_fee_absolute -> Option<i128> with Some(-1)
+src/lib.rs:975:9: replace StableRouteRouter::set_max_fee_absolute with ()
+src/lib.rs:976:20: replace < with == in StableRouteRouter::set_max_fee_absolute
+src/lib.rs:976:20: replace < with <= in StableRouteRouter::set_max_fee_absolute
+src/lib.rs:976:20: replace < with > in StableRouteRouter::set_max_fee_absolute
+src/lib.rs:989:9: replace StableRouteRouter::apply_fee_floor -> i128 with 0
+src/lib.rs:989:9: replace StableRouteRouter::apply_fee_floor -> i128 with 1
+src/lib.rs:1001:9: replace StableRouteRouter::get_min_fee_absolute -> Option<i128> with None
+src/lib.rs:989:9: replace StableRouteRouter::apply_fee_floor -> i128 with -1
+src/lib.rs:1001:9: replace StableRouteRouter::get_min_fee_absolute -> Option<i128> with Some(0)
+src/lib.rs:1001:9: replace StableRouteRouter::get_min_fee_absolute -> Option<i128> with Some(1)
+src/lib.rs:1001:9: replace StableRouteRouter::get_min_fee_absolute -> Option<i128> with Some(-1)
+src/lib.rs:1009:9: replace StableRouteRouter::set_min_fee_absolute with ()
+src/lib.rs:1010:20: replace < with == in StableRouteRouter::set_min_fee_absolute
+src/lib.rs:1010:20: replace < with > in StableRouteRouter::set_min_fee_absolute
+src/lib.rs:1021:9: replace StableRouteRouter::get_pair_liquidity -> i128 with 1
+src/lib.rs:1021:9: replace StableRouteRouter::get_pair_liquidity -> i128 with 0
+src/lib.rs:1021:9: replace StableRouteRouter::get_pair_liquidity -> i128 with -1
+src/lib.rs:1026:9: replace StableRouteRouter::get_oracle -> Option<Address> with None
+src/lib.rs:1042:9: replace StableRouteRouter::set_oracle with ()
+src/lib.rs:1071:9: replace StableRouteRouter::remove_oracle with ()
+src/lib.rs:1113:28: replace && with || in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1106:9: replace StableRouteRouter::set_pair_liquidity with ()
+src/lib.rs:1113:19: replace != with == in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1113:52: replace != with == in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1116:22: replace < with == in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1116:22: replace < with > in StableRouteRouter::set_pair_liquidity
+src/lib.rs:1132:9: replace StableRouteRouter::get_pair_max_amount -> i128 with 0
+src/lib.rs:1132:9: replace StableRouteRouter::get_pair_max_amount -> i128 with 1
+src/lib.rs:1132:9: replace StableRouteRouter::get_pair_max_amount -> i128 with -1
+src/lib.rs:1143:23: replace <= with > in StableRouteRouter::set_pair_max_amount
+src/lib.rs:1142:9: replace StableRouteRouter::set_pair_max_amount with ()
+src/lib.rs:1154:9: replace StableRouteRouter::get_pair_min_amount -> i128 with 0
+src/lib.rs:1154:9: replace StableRouteRouter::get_pair_min_amount -> i128 with 1
+src/lib.rs:1154:9: replace StableRouteRouter::get_pair_min_amount -> i128 with -1
+src/lib.rs:1164:9: replace StableRouteRouter::set_pair_min_amount with ()
+src/lib.rs:1165:23: replace < with == in StableRouteRouter::set_pair_min_amount
+src/lib.rs:1165:23: replace < with > in StableRouteRouter::set_pair_min_amount
+src/lib.rs:1193:9: replace StableRouteRouter::unregister_pair with ()
+src/lib.rs:1219:9: replace StableRouteRouter::purge_pair_metrics with ()
+src/lib.rs:1236:9: replace StableRouteRouter::is_pair_registered -> bool with true
+src/lib.rs:1236:9: replace StableRouteRouter::is_pair_registered -> bool with false
+src/lib.rs:1253:9: replace StableRouteRouter::set_pair_fee_bps with ()
+src/lib.rs:1255:20: replace > with == in StableRouteRouter::set_pair_fee_bps
+src/lib.rs:1255:20: replace > with < in StableRouteRouter::set_pair_fee_bps
+src/lib.rs:1255:20: replace > with >= in StableRouteRouter::set_pair_fee_bps
+src/lib.rs:1283:26: replace > with == in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1278:9: replace StableRouteRouter::set_pair_fees_bps with ()
+src/lib.rs:1283:26: replace > with < in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1287:24: replace > with == in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1287:24: replace > with < in StableRouteRouter::set_pair_fees_bps
+src/lib.rs:1303:9: replace StableRouteRouter::get_pair_fee_bps -> u32 with 0
+src/lib.rs:1303:9: replace StableRouteRouter::get_pair_fee_bps -> u32 with 1
+src/lib.rs:1344:9: replace StableRouteRouter::compute_route_fee -> i128 with 1
+src/lib.rs:1344:9: replace StableRouteRouter::compute_route_fee -> i128 with 0
+src/lib.rs:1344:9: replace StableRouteRouter::compute_route_fee -> i128 with -1
+src/lib.rs:1349:19: replace <= with > in StableRouteRouter::compute_route_fee
+src/lib.rs:1353:12: delete ! in StableRouteRouter::compute_route_fee
+src/lib.rs:1362:19: replace < with > in StableRouteRouter::compute_route_fee
+src/lib.rs:1362:19: replace < with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1362:19: replace < with <= in StableRouteRouter::compute_route_fee
+src/lib.rs:1366:19: replace > with < in StableRouteRouter::compute_route_fee
+src/lib.rs:1366:19: replace > with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1366:19: replace > with >= in StableRouteRouter::compute_route_fee
+src/lib.rs:1374:19: replace > with < in StableRouteRouter::compute_route_fee
+src/lib.rs:1374:19: replace > with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1374:19: replace > with >= in StableRouteRouter::compute_route_fee
+src/lib.rs:1410:22: replace != with == in StableRouteRouter::compute_route_fee
+src/lib.rs:1464:24: replace / with * in StableRouteRouter::compute_route_fee
+src/lib.rs:1464:24: replace / with % in StableRouteRouter::compute_route_fee
+src/lib.rs:1508:9: replace StableRouteRouter::upgrade with ()

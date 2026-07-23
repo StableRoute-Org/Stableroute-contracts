@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pending_admin_info -> PendingAdminInfo with Default::default()
+@@ -617,20 +617,17 @@
+     }
+ 
+     /// Read both components of the queued admin handover in one call.
+     ///
+     /// Returns a consistent snapshot of the pending admin and its
+     /// earliest acceptance timestamp (ETA). Both fields are `None`
+     /// when no transfer is queued.
+     pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {
+-        PendingAdminInfo {
+-            pending: env.storage().instance().get(&DataKey::PendingAdmin),
+-            eta: env.storage().persistent().get(&DataKey::PendingAdminEta),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Step 2 of admin handover. The pending admin claims the role
+     /// from their own key. Panics with NoPendingAdminTransfer if none
+     /// is pending or NotPendingAdmin if the caller does not match.
+     pub fn accept_admin_transfer(env: Env, caller: Address) {
+         caller.require_auth();
+         let pending: Address = env

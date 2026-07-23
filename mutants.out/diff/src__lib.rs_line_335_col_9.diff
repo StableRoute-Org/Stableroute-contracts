@@ -1,0 +1,28 @@
+--- src/lib.rs
++++ replace StableRouteRouter::require_pair_registered with ()
+@@ -327,24 +327,17 @@
+     /// Every per-pair config setter (`set_pair_fee_bps`,
+     /// `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`)
+     /// calls this after its own admin/sign validation so a config write can
+     /// never create an orphan storage slot for a corridor an operator never
+     /// registered. Reuses the same [`RouterError::PairNotRegistered`] (#5)
+     /// that `compute_route_fee` and `quote_route` already raise, keeping
+     /// one error code for "this pair does not exist" across the contract.
+     fn require_pair_registered(env: &Env, source: &Symbol, destination: &Symbol) {
+-        if !env
+-            .storage()
+-            .persistent()
+-            .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+-            .unwrap_or(false)
+-        {
+-            panic_with_error!(env, RouterError::PairNotRegistered);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Acquire the reentrancy lock; panics [`RouterError::ReentrantCall`]
+     /// if already held. Paired with [`Self::exit_nonreentrant`] on every
+     /// return path so that a re-entrant invocation (for example via a
+     /// future malicious token callback) is rejected instead of operating
+     /// on partially-applied effects.
+     fn enter_nonreentrant(env: &Env) {

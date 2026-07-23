@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ delete ! in StableRouteRouter::require_pair_registered
+@@ -327,17 +327,17 @@
+     /// Every per-pair config setter (`set_pair_fee_bps`,
+     /// `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`)
+     /// calls this after its own admin/sign validation so a config write can
+     /// never create an orphan storage slot for a corridor an operator never
+     /// registered. Reuses the same [`RouterError::PairNotRegistered`] (#5)
+     /// that `compute_route_fee` and `quote_route` already raise, keeping
+     /// one error code for "this pair does not exist" across the contract.
+     fn require_pair_registered(env: &Env, source: &Symbol, destination: &Symbol) {
+-        if !env
++        if  /* ~ changed by cargo-mutants ~ */env
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             panic_with_error!(env, RouterError::PairNotRegistered);
+         }
+     }

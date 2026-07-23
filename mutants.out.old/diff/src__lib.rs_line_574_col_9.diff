@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::pause with ()
+@@ -566,20 +566,17 @@
+         env.storage().instance().set(&DataKey::Paused, &false);
+         Self::bump_instance_ttl(&env);
+         env.events().publish((symbol_short!("paused"),), false);
+     }
+ 
+     /// Admin pauses the router. All state-changing entrypoints will
+     /// then panic with ContractPaused.
+     pub fn pause(env: Env) {
+-        Self::require_admin(&env);
+-        env.storage().instance().set(&DataKey::Paused, &true);
+-        Self::bump_instance_ttl(&env);
+-        env.events().publish((symbol_short!("paused"),), true);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the configured governance timelock delay, in seconds
+     /// (0 when unset — handover is instant).
+     pub fn get_timelock(env: Env) -> u64 {
+         env.storage()
+             .persistent()
+             .get(&DataKey::Timelock)

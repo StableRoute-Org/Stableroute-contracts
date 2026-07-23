@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_liquidity -> i128 with -1
+@@ -1013,17 +1013,17 @@
+         env.storage()
+             .persistent()
+             .set(&DataKey::MinFeeAbsolute, &min_fee);
+         env.events().publish((symbol_short!("minfee"),), min_fee);
+     }
+ 
+     /// Read the reported liquidity for a pair (0 when absent).
+     pub fn get_pair_liquidity(env: Env, source: Symbol, destination: Symbol) -> i128 {
+-        Self::read_pair_liquidity(&env, &source, &destination)
++        -1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the configured liquidity oracle, if any.
+     pub fn get_oracle(env: Env) -> Option<Address> {
+         env.storage().persistent().get(&DataKey::Oracle)
+     }
+ 
+     /// Admin sets (or rotates) the scoped liquidity oracle.

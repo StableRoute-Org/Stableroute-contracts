@@ -1,0 +1,27 @@
+--- src/lib.rs
++++ replace StableRouteRouter::require_admin -> Address with Default::default()
+@@ -296,23 +296,17 @@
+ #[contractimpl]
+ impl StableRouteRouter {
+     /// Load the admin address, require its auth, and return it.
+     ///
+     /// Every admin-gated entrypoint calls this instead of repeating the
+     /// six-line load-unwrap-require_auth block. Keeping it private
+     /// ensures it never appears in the generated client ABI.
+     fn require_admin(env: &Env) -> Address {
+-        let admin: Address = env
+-            .storage()
+-            .instance()
+-            .get(&DataKey::Admin)
+-            .unwrap_or_else(|| panic_with_error!(env, RouterError::NotInitialized));
+-        admin.require_auth();
+-        admin
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Renew the contract instance's TTL. Called after every write to a
+     /// hot-global instance slot (`Admin`, `PendingAdmin`, `Paused`) so the
+     /// instance — and therefore these singletons — never archives as long
+     /// as the contract keeps receiving admin/pause/transfer traffic.
+     fn bump_instance_ttl(env: &Env) {
+         env.storage()

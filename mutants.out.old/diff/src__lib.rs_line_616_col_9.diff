@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pending_admin -> Option<Address> with None
+@@ -608,17 +608,17 @@
+         Self::require_admin(&env);
+         env.storage().instance().remove(&DataKey::PendingAdmin);
+         env.storage().persistent().remove(&DataKey::PendingAdminEta);
+         Self::bump_instance_ttl(&env);
+     }
+ 
+     /// Read the pending admin if any.
+     pub fn get_pending_admin(env: Env) -> Option<Address> {
+-        env.storage().instance().get(&DataKey::PendingAdmin)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read both components of the queued admin handover in one call.
+     ///
+     /// Returns a consistent snapshot of the pending admin and its
+     /// earliest acceptance timestamp (ETA). Both fields are `None`
+     /// when no transfer is queued.
+     pub fn get_pending_admin_info(env: Env) -> PendingAdminInfo {

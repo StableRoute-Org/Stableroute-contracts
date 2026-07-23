@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace / with * in StableRouteRouter::compute_route_fee
+@@ -1456,17 +1456,17 @@
+             (source.clone(), destination.clone(), amount),
+         );
+         let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
+         // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
+         // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
+         // multiplication is bounded.
+         let fee = amount
+             .checked_mul(fee_bps as i128)
+-            .map(|n| n / BPS_DENOMINATOR)
++            .map(|n| n * /* ~ changed by cargo-mutants ~ */ BPS_DENOMINATOR)
+             .unwrap_or(0);
+         let fee = Self::apply_fee_cap(&env, fee);
+         let fee = Self::apply_fee_floor(&env, fee);
+         Self::exit_nonreentrant(&env);
+         fee
+     }
+ 
+     /// Compute a deterministic, direction-sensitive route identifier for a

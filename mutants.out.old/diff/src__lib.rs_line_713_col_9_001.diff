@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_admin -> Option<Address> with Some(Default::default())
+@@ -705,17 +705,17 @@
+         if env.ledger().timestamp() < eta {
+             panic_with_error!(&env, RouterError::TimelockNotElapsed);
+         }
+         Self::finalize_admin_transfer(&env, new_admin);
+     }
+ 
+     /// Returns the admin set at `init`, if any.
+     pub fn get_admin(env: Env) -> Option<Address> {
+-        env.storage().instance().get(&DataKey::Admin)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Register `(source, destination)` as a recognised route.
+     ///
+     /// Admin-gated; rejects `source == destination`. Idempotent: a
+     /// second call with the same pair simply re-asserts the entry and
+     /// is a no-op from the caller's perspective.
+     ///

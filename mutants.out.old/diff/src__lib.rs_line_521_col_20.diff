@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace != with == in StableRouteRouter::migrate_v1_to_v2
+@@ -513,17 +513,17 @@
+     /// only stamps the new SchemaVersion.
+     pub fn migrate_v1_to_v2(env: Env) {
+         Self::require_admin(&env);
+         let current: u32 = env
+             .storage()
+             .persistent()
+             .get(&DataKey::SchemaVersion)
+             .unwrap_or(1);
+-        if current != 1 {
++        if current == /* ~ changed by cargo-mutants ~ */ 1 {
+             panic_with_error!(&env, RouterError::MigrationVersionMismatch);
+         }
+         env.storage()
+             .persistent()
+             .set(&DataKey::SchemaVersion, &2u32);
+     }
+ 
+     /// Deploy-time constructor — sets the operational admin **atomically**

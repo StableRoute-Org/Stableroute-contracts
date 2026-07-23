@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_fee_bps -> u32 with 0
+@@ -1295,17 +1295,17 @@
+             env.events()
+                 .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
+         }
+     }
+ 
+     /// Returns the configured fee in basis points for a pair, or 0 if
+     /// no fee has been set (a registered pair with no fee is free).
+     pub fn get_pair_fee_bps(env: Env, source: Symbol, destination: Symbol) -> u32 {
+-        Self::read_pair_fee_bps(&env, &source, &destination)
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Compute the fee in source units for routing `amount` through the
+     /// `(source, destination)` pair.
+     ///
+     /// Rejects unregistered pairs with [`RouterError::PairNotRegistered`]
+     /// and non-positive amounts with [`RouterError::AmountMustBePositive`]
+     /// so off-chain callers always get a clear typed error instead of a

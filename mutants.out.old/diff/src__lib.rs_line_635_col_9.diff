@@ -1,0 +1,40 @@
+--- src/lib.rs
++++ replace StableRouteRouter::accept_admin_transfer with ()
+@@ -627,36 +627,17 @@
+             eta: env.storage().persistent().get(&DataKey::PendingAdminEta),
+         }
+     }
+ 
+     /// Step 2 of admin handover. The pending admin claims the role
+     /// from their own key. Panics with NoPendingAdminTransfer if none
+     /// is pending or NotPendingAdmin if the caller does not match.
+     pub fn accept_admin_transfer(env: Env, caller: Address) {
+-        caller.require_auth();
+-        let pending: Address = env
+-            .storage()
+-            .instance()
+-            .get(&DataKey::PendingAdmin)
+-            .unwrap_or_else(|| panic_with_error!(&env, RouterError::NoPendingAdminTransfer));
+-        if pending != caller {
+-            panic_with_error!(&env, RouterError::NotPendingAdmin);
+-        }
+-        // Honour the governance timelock: the handover cannot execute until
+-        // its stamped eta has been reached.
+-        let eta: u64 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::PendingAdminEta)
+-            .unwrap_or(0);
+-        if env.ledger().timestamp() < eta {
+-            panic_with_error!(&env, RouterError::TimelockNotElapsed);
+-        }
+-        Self::finalize_admin_transfer(&env, caller);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Step 1 of admin handover. Current admin proposes a new admin;
+     /// the new admin must then accept via `accept_admin_transfer` once the
+     /// governance timelock (if any) has elapsed.
+     ///
+     /// Stamps `PendingAdminEta = now + timelock` and emits a `queued`
+     /// event carrying the new admin and the eta so watchers get a warning
