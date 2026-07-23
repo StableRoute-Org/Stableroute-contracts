@@ -1,0 +1,40 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_pair_fees_bps with ()
+@@ -1270,36 +1270,17 @@
+     ///
+     /// **All-or-nothing:** if any entry fails validation the entire
+     /// transaction is rolled back (Soroban transactions are atomic), so
+     /// callers must ensure every entry is well-formed before invoking
+     /// this. Requires at least one entry; an empty batch panics with
+     /// [`RouterError::EmptyBatch`]. Capped at [`MAX_BATCH_SIZE`] entries;
+     /// exceeding it panics with [`RouterError::BatchTooLarge`].
+     pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
+-        Self::require_not_paused(&env);
+-        Self::require_admin(&env);
+-        if entries.is_empty() {
+-            panic_with_error!(&env, RouterError::EmptyBatch);
+-        }
+-        if entries.len() > MAX_BATCH_SIZE {
+-            panic_with_error!(&env, RouterError::BatchTooLarge);
+-        }
+-        for (source, destination, fee_bps) in entries.iter() {
+-            if fee_bps > MAX_FEE_BPS {
+-                panic_with_error!(&env, RouterError::FeeBpsTooHigh);
+-            }
+-            Self::require_pair_registered(&env, &source, &destination);
+-            env.storage().persistent().set(
+-                &DataKey::PairFeeBps(source.clone(), destination.clone()),
+-                &fee_bps,
+-            );
+-            env.events()
+-                .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns the configured fee in basis points for a pair, or 0 if
+     /// no fee has been set (a registered pair with no fee is free).
+     pub fn get_pair_fee_bps(env: Env, source: Symbol, destination: Symbol) -> u32 {
+         Self::read_pair_fee_bps(&env, &source, &destination)
+     }
+ 

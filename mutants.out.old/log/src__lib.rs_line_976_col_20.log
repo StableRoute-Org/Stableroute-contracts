@@ -1,0 +1,626 @@
+
+*** src/lib.rs:976:20: replace < with == in StableRouteRouter::set_max_fee_absolute
+
+*** mutation diff:
+--- src/lib.rs
++++ replace < with == in StableRouteRouter::set_max_fee_absolute
+@@ -968,17 +968,17 @@
+ 
+     /// Admin sets the absolute per-route fee ceiling (in source units).
+     /// Rejects negative caps with `AmountMustBePositive` (#6). A cap of `0`
+     /// makes every route effectively free. Emits a `maxfee` event. The cap
+     /// composes with `MAX_FEE_BPS`: a route is charged
+     /// `min(amount * fee_bps / 10_000, max_fee_absolute)`.
+     pub fn set_max_fee_absolute(env: Env, max_fee: i128) {
+         Self::require_admin(&env);
+-        if max_fee < 0 {
++        if max_fee == /* ~ changed by cargo-mutants ~ */ 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+         env.storage()
+             .persistent()
+             .set(&DataKey::MaxFeeAbsolute, &max_fee);
+         env.events().publish((symbol_short!("maxfee"),), max_fee);
+     }
+ 
+
+
+*** /home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=stableroute-contracts@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh version_check v0.9.5
+       Fresh cfg-if v1.0.4
+       Fresh typenum v1.20.1
+       Fresh libc v0.2.186
+       Fresh serde_core v1.0.228
+       Fresh serde_derive v1.0.228
+       Fresh serde v1.0.228
+       Fresh zmij v1.0.21
+       Fresh zeroize_derive v1.5.0
+       Fresh itoa v1.0.18
+       Fresh memchr v2.8.2
+       Fresh zeroize v1.9.0
+       Fresh serde_json v1.0.150
+       Fresh subtle v2.6.1
+       Fresh autocfg v1.5.1
+       Fresh crate-git-revision v0.0.6
+       Fresh const-oid v0.9.6
+       Fresh getrandom v0.2.17
+       Fresh strsim v0.11.1
+       Fresh rand_core v0.6.4
+       Fresh ident_case v1.0.1
+       Fresh cpufeatures v0.2.17
+       Fresh zerocopy v0.8.52
+       Fresh darling_core v0.23.0
+       Fresh darling_macro v0.23.0
+       Fresh semver v1.0.28
+       Fresh num-traits v0.2.19
+       Fresh generic-array v0.14.9
+       Fresh darling v0.23.0
+       Fresh ppv-lite86 v0.2.21
+       Fresh dyn-clone v1.0.20
+       Fresh serde_with_macros v3.21.0
+       Fresh syn v1.0.109
+       Fresh schemars v0.8.22
+       Fresh data-encoding v2.11.0
+       Fresh block-buffer v0.10.4
+       Fresh crypto-common v0.1.6
+       Fresh hex v0.4.3
+       Fresh once_cell v1.21.4
+       Fresh paste v1.0.15
+       Fresh digest v0.10.7
+       Fresh stellar-strkey v0.0.13
+       Fresh rand_chacha v0.3.1
+       Fresh cfg_eval v0.1.2
+       Fresh escape-bytes v0.1.1
+       Fresh ethnum v1.5.3
+       Fresh rand v0.8.6
+       Fresh num-integer v0.1.46
+       Fresh num-bigint v0.4.6
+       Fresh ark-std v0.4.0
+       Fresh ark-serialize-derive v0.4.2
+       Fresh rustc_version v0.4.1
+       Fresh ff v0.13.1
+       Fresh der v0.7.10
+       Fresh equivalent v1.0.2
+       Fresh base16ct v0.2.0
+       Fresh either v1.16.0
+       Fresh hashbrown v0.17.1
+       Fresh indexmap v2.14.0
+       Fresh sec1 v0.7.3
+       Fresh itertools v0.10.5
+       Fresh group v0.13.0
+       Fresh ark-serialize v0.4.2
+       Fresh ahash v0.8.12
+       Fresh ark-ff-macros v0.4.2
+       Fresh ark-ff-asm v0.4.2
+       Fresh derivative v2.2.0
+       Fresh sha2 v0.10.9
+       Fresh signature v2.2.0
+       Fresh crypto-bigint v0.5.5
+       Fresh base64 v0.22.1
+       Fresh elliptic-curve v0.13.8
+       Fresh ark-ff v0.4.2
+       Fresh hashbrown v0.13.2
+       Fresh wasmparser v0.116.1
+       Fresh hmac v0.12.1
+       Fresh fnv v1.0.7
+       Fresh rfc6979 v0.4.0
+       Fresh ark-poly v0.4.2
+       Fresh libm v0.2.16
+       Fresh soroban-env-macros v25.0.1
+       Fresh thiserror-impl v1.0.69
+       Fresh derive_arbitrary v1.3.2
+       Fresh num-derive v0.4.2
+       Fresh downcast-rs v1.2.1
+       Fresh static_assertions v1.1.0
+       Fresh indexmap-nostd v0.4.0
+       Fresh wasmi_core v0.13.0
+       Fresh wasmparser-nostd v0.100.2
+       Fresh thiserror v1.0.69
+       Fresh arbitrary v1.3.2
+       Fresh ark-ec v0.4.2
+       Fresh ecdsa v0.16.9
+       Fresh serde_with v3.21.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh spin v0.9.8
+       Fresh wasmi_arena v0.4.1
+       Fresh smallvec v1.15.2
+       Fresh curve25519-dalek v4.1.3
+       Fresh soroban-wasmi v0.31.1-soroban.20.0.1
+       Fresh stellar-xdr v25.0.0
+       Fresh getrandom v0.3.4
+       Fresh darling_core v0.20.11
+       Fresh primeorder v0.13.6
+       Fresh ed25519 v2.2.3
+       Fresh keccak v0.1.6
+       Fresh byteorder v1.5.0
+       Fresh sha3 v0.10.9
+       Fresh hash32 v0.3.1
+       Fresh ed25519-dalek v2.2.0
+       Fresh p256 v0.13.2
+       Fresh darling_macro v0.20.11
+       Fresh rand_core v0.9.5
+       Fresh prettyplease v0.2.37
+       Fresh k256 v0.13.4
+       Fresh ark-bls12-381 v0.4.0
+       Fresh ark-bn254 v0.4.0
+       Fresh soroban-spec v25.3.1
+       Fresh soroban-builtin-sdk-macros v25.0.1
+       Fresh linux-raw-sys v0.12.1
+       Fresh dtor-proc-macro v0.0.6
+       Fresh bitflags v2.13.0
+       Fresh hex-literal v0.4.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh soroban-env-host v25.0.1
+       Fresh heapless v0.8.0
+       Fresh rustix v1.1.4
+       Fresh dtor v0.1.1
+       Fresh soroban-spec-rust v25.3.1
+       Fresh darling v0.20.11
+       Fresh soroban-env-common v25.0.1
+       Fresh getrandom v0.4.3
+       Fresh macro-string v0.1.4
+       Fresh heck v0.5.0
+       Fresh fastrand v2.4.1
+       Fresh ctor-proc-macro v0.0.6
+       Fresh tempfile v3.27.0
+       Fresh ctor v0.5.0
+       Fresh soroban-sdk-macros v25.3.1
+       Fresh stellar-strkey v0.0.16
+       Fresh soroban-ledger-snapshot v25.3.1
+       Fresh bytes-lit v0.0.5
+       Fresh wait-timeout v0.2.1
+       Fresh visibility v0.1.1
+       Fresh bit-vec v0.8.0
+       Fresh quick-error v1.2.3
+       Fresh soroban-sdk v25.3.1
+       Fresh bit-set v0.8.0
+       Fresh rusty-fork v0.3.1
+       Fresh rand_chacha v0.9.0
+       Fresh rand v0.9.4
+       Fresh rand_xorshift v0.4.0
+       Fresh regex-syntax v0.8.11
+       Fresh unarray v0.1.4
+       Fresh proptest v1.10.0
+       Dirty stableroute-contracts v0.1.0 (/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp): the file `src/lib.rs` has changed (1784743282.097250554s, 44s after last build at 1784743238.861253091s)
+   Compiling stableroute-contracts v0.1.0 (/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp)
+     Running `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type cdylib --crate-type rlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=cb8fb75cbd7555e7 --out-dir /tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib`
+     Running `/home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name stableroute_contracts --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a1cc0ef00f761151 -C extra-filename=-776fcdbe979f002d --out-dir /tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps --extern proptest=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps/libproptest-4fb65fd7ef525dcb.rlib --extern soroban_sdk=/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps/libsoroban_sdk-bdba9913937f7610.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.34s
+  Executable `/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps/stableroute_contracts-776fcdbe979f002d`
+
+*** result: Success
+
+*** /home/codespace/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=stableroute-contracts@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.106
+       Fresh quote v1.0.46
+       Fresh syn v2.0.118
+       Fresh version_check v0.9.5
+       Fresh cfg-if v1.0.4
+       Fresh typenum v1.20.1
+       Fresh libc v0.2.186
+       Fresh serde_core v1.0.228
+       Fresh serde_derive v1.0.228
+       Fresh serde v1.0.228
+       Fresh zmij v1.0.21
+       Fresh zeroize_derive v1.5.0
+       Fresh itoa v1.0.18
+       Fresh memchr v2.8.2
+       Fresh serde_json v1.0.150
+       Fresh zeroize v1.9.0
+       Fresh subtle v2.6.1
+       Fresh autocfg v1.5.1
+       Fresh crate-git-revision v0.0.6
+       Fresh const-oid v0.9.6
+       Fresh getrandom v0.2.17
+       Fresh rand_core v0.6.4
+       Fresh strsim v0.11.1
+       Fresh ident_case v1.0.1
+       Fresh zerocopy v0.8.52
+       Fresh cpufeatures v0.2.17
+       Fresh darling_core v0.23.0
+       Fresh darling_macro v0.23.0
+       Fresh semver v1.0.28
+       Fresh darling v0.23.0
+       Fresh num-traits v0.2.19
+       Fresh generic-array v0.14.9
+       Fresh ppv-lite86 v0.2.21
+       Fresh dyn-clone v1.0.20
+       Fresh schemars v0.8.22
+       Fresh serde_with_macros v3.21.0
+       Fresh syn v1.0.109
+       Fresh data-encoding v2.11.0
+       Fresh block-buffer v0.10.4
+       Fresh crypto-common v0.1.6
+       Fresh hex v0.4.3
+       Fresh once_cell v1.21.4
+       Fresh digest v0.10.7
+       Fresh stellar-strkey v0.0.13
+       Fresh paste v1.0.15
+       Fresh rand_chacha v0.3.1
+       Fresh cfg_eval v0.1.2
+       Fresh ethnum v1.5.3
+       Fresh escape-bytes v0.1.1
+       Fresh rand v0.8.6
+       Fresh num-integer v0.1.46
+       Fresh num-bigint v0.4.6
+       Fresh ark-std v0.4.0
+       Fresh ark-serialize-derive v0.4.2
+       Fresh rustc_version v0.4.1
+       Fresh ff v0.13.1
+       Fresh der v0.7.10
+       Fresh hashbrown v0.17.1
+       Fresh base16ct v0.2.0
+       Fresh either v1.16.0
+       Fresh equivalent v1.0.2
+       Fresh indexmap v2.14.0
+       Fresh sec1 v0.7.3
+       Fresh itertools v0.10.5
+       Fresh group v0.13.0
+       Fresh ark-serialize v0.4.2
+       Fresh ahash v0.8.12
+       Fresh ark-ff-macros v0.4.2
+       Fresh ark-ff-asm v0.4.2
+       Fresh derivative v2.2.0
+       Fresh sha2 v0.10.9
+       Fresh signature v2.2.0
+       Fresh crypto-bigint v0.5.5
+       Fresh base64 v0.22.1
+       Fresh elliptic-curve v0.13.8
+       Fresh ark-ff v0.4.2
+       Fresh hashbrown v0.13.2
+       Fresh wasmparser v0.116.1
+       Fresh hmac v0.12.1
+       Fresh fnv v1.0.7
+       Fresh rfc6979 v0.4.0
+       Fresh ark-poly v0.4.2
+       Fresh libm v0.2.16
+       Fresh soroban-env-macros v25.0.1
+       Fresh derive_arbitrary v1.3.2
+       Fresh thiserror-impl v1.0.69
+       Fresh num-derive v0.4.2
+       Fresh static_assertions v1.1.0
+       Fresh downcast-rs v1.2.1
+       Fresh indexmap-nostd v0.4.0
+       Fresh wasmparser-nostd v0.100.2
+       Fresh wasmi_core v0.13.0
+       Fresh thiserror v1.0.69
+       Fresh arbitrary v1.3.2
+       Fresh ark-ec v0.4.2
+       Fresh ecdsa v0.16.9
+       Fresh serde_with v3.21.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh wasmi_arena v0.4.1
+       Fresh spin v0.9.8
+       Fresh smallvec v1.15.2
+       Fresh soroban-wasmi v0.31.1-soroban.20.0.1
+       Fresh curve25519-dalek v4.1.3
+       Fresh stellar-xdr v25.0.0
+       Fresh getrandom v0.3.4
+       Fresh darling_core v0.20.11
+       Fresh primeorder v0.13.6
+       Fresh ed25519 v2.2.3
+       Fresh byteorder v1.5.0
+       Fresh keccak v0.1.6
+       Fresh sha3 v0.10.9
+       Fresh hash32 v0.3.1
+       Fresh ed25519-dalek v2.2.0
+       Fresh p256 v0.13.2
+       Fresh darling_macro v0.20.11
+       Fresh rand_core v0.9.5
+       Fresh prettyplease v0.2.37
+       Fresh k256 v0.13.4
+       Fresh ark-bls12-381 v0.4.0
+       Fresh ark-bn254 v0.4.0
+       Fresh soroban-spec v25.3.1
+       Fresh soroban-builtin-sdk-macros v25.0.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh linux-raw-sys v0.12.1
+       Fresh bitflags v2.13.0
+       Fresh dtor-proc-macro v0.0.6
+       Fresh hex-literal v0.4.1
+       Fresh soroban-env-host v25.0.1
+       Fresh dtor v0.1.1
+       Fresh rustix v1.1.4
+       Fresh heapless v0.8.0
+       Fresh soroban-spec-rust v25.3.1
+       Fresh darling v0.20.11
+       Fresh soroban-env-common v25.0.1
+       Fresh getrandom v0.4.3
+       Fresh macro-string v0.1.4
+       Fresh heck v0.5.0
+       Fresh fastrand v2.4.1
+       Fresh ctor-proc-macro v0.0.6
+       Fresh ctor v0.5.0
+       Fresh tempfile v3.27.0
+       Fresh soroban-sdk-macros v25.3.1
+       Fresh stellar-strkey v0.0.16
+       Fresh soroban-ledger-snapshot v25.3.1
+       Fresh bytes-lit v0.0.5
+       Fresh wait-timeout v0.2.1
+       Fresh visibility v0.1.1
+       Fresh bit-vec v0.8.0
+       Fresh quick-error v1.2.3
+       Fresh rusty-fork v0.3.1
+       Fresh bit-set v0.8.0
+       Fresh soroban-sdk v25.3.1
+       Fresh rand v0.9.4
+       Fresh rand_xorshift v0.4.0
+       Fresh rand_chacha v0.9.0
+       Fresh regex-syntax v0.8.11
+       Fresh unarray v0.1.4
+       Fresh proptest v1.10.0
+       Fresh stableroute-contracts v0.1.0 (/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.89s
+     Running `/tmp/cargo-mutants-Stableroute-contracts-5UNaqy.tmp/target/debug/deps/stableroute_contracts-776fcdbe979f002d`
+
+running 234 tests
+test test::prop_fee_never_exceeds_amount ... ok
+test test::prop_capped_fee_matches_pure_math ... ok
+test test::prop_fee_within_amount ... ok
+test test::prop_overflow_fallback_is_zero ... ok
+test test::prop_zero_bps_yields_zero_fee ... ok
+test test::prop_quote_matches_compute ... ok
+test test::test_accept_admin_transfer_rejects_missing_pending_admin - should panic ... ok
+test test::test_accept_admin_transfer_rejects_wrong_pending_admin - should panic ... ok
+test test::test_admin_can_still_update_liquidity ... ok
+test test::test_admin_can_still_update_liquidity_after_removal ... ok
+test test::test_admin_transfer_flow ... ok
+test test::test_cancel_admin_transfer_clears_pending_admin ... ok
+test test::test_compute_route_fee_basic ... ok
+test test::test_compute_route_fee_clears_reentrancy_lock_after_success ... ok
+test test::test_compute_route_fee_counter_is_global_across_pairs ... ok
+test test::test_compute_route_fee_emits_route_event_with_payload ... ok
+test test::test_compute_route_fee_is_zero_when_fee_unset ... ok
+test test::test_compute_route_fee_rejects_above_maximum - should panic ... ok
+test test::test_compute_route_fee_rejects_below_minimum - should panic ... ok
+test test::test_compute_route_fee_rejects_insufficient_liquidity - should panic ... ok
+test test::test_compute_route_fee_rejects_reentry_from_mock_callback ... ok
+test test::test_compute_route_fee_rejects_unregistered_pair - should panic ... ok
+test test::test_compute_route_fee_rejects_when_paused - should panic ... ok
+test test::test_compute_route_fee_rejects_zero_amount - should panic ... ok
+test test::test_compute_route_fee_releases_lock_for_consecutive_calls ... ok
+test test::test_compute_route_fee_resumes_after_unpause ... ok
+test test::test_compute_route_fee_stamps_pair_last_route_at ... ok
+test test::test_constructor_emits_single_init_event_with_admin_payload ... ok
+test test::test_constructor_rejects_missing_admin_arg - should panic ... ok
+test test::test_fee_recipient_round_trip ... ok
+test test::test_force_admin_transfer_allows_after_timelock ... ok
+test test::test_force_admin_transfer_blocks_early_force - should panic ... ok
+test test::test_force_admin_transfer_emits_executed_event ... ok
+test test::test_force_admin_transfer_rejects_missing_pending_admin - should panic ... ok
+test test::test_force_admin_transfer_rejects_wrong_pending_admin - should panic ... ok
+test test::test_force_admin_transfer_success ... ok
+test test::test_get_pair_fee_bps_defaults_to_zero ... ok
+test test::test_init_persists_admin ... ok
+test test::test_init_rejects_double_init - should panic ... ok
+test test::test_is_pair_registered_defaults_to_false ... ok
+test test::test_oracle_can_be_reconfigured_after_removal ... ok
+test test::test_oracle_can_update_before_removal_but_not_after ... ok
+test test::test_oracle_can_update_liquidity ... ok
+test test::test_oracle_cannot_call_admin_entrypoint - should panic ... ok
+test test::test_pair_lifecycle_events_have_exact_payloads_and_counts ... ok
+test test::test_pair_limits_liquidity_and_info_round_trip ... ok
+test test::test_pause_and_unpause_round_trip ... ok
+test test::test_post_deploy_init_rejects_different_address - should panic ... ok
+test test::test_post_deploy_init_rejects_original_admin - should panic ... ok
+test test::test_purge_pair_metrics_does_not_touch_registration_or_config ... ok
+test test::test_purge_pair_metrics_rejects_non_admin - should panic ... ok
+test test::test_purge_pair_metrics_resets_counters_and_emits_event ... ok
+test test::test_quote_route_allowed_while_paused ... ok
+test test::test_quote_route_and_compute_route_update_counters ... ok
+test test::test_quote_route_does_not_mutate_counter_or_emit_route_event ... ok
+test test::test_quote_route_rejects_unregistered_pair - should panic ... ok
+test test::test_quote_route_rejects_zero_amount - should panic ... ok
+test test::test_random_caller_cannot_update_liquidity - should panic ... ok
+test test::test_register_pair_is_idempotent ... ok
+test test::test_register_pair_rejects_identity - should panic ... ok
+test test::test_register_pair_rejects_when_paused - should panic ... ok
+test test::test_register_pair_round_trip ... ok
+test test::test_remove_oracle_emits_orac_rm_event ... ok
+test test::test_remove_oracle_is_idempotent ... ok
+test test::test_remove_oracle_noop_emits_event_with_none ... ok
+test test::test_remove_oracle_panics_when_uninitialized - should panic ... ok
+test test::test_remove_oracle_requires_admin_auth - should panic ... ok
+test test::test_removed_oracle_rejected_with_not_authorized - should panic ... ok
+test test::test_require_admin_rejects_unauthorized_caller - should panic ... ok
+test test::test_reregister_after_unregister_preserves_fee_and_clears_other_config ... ok
+test test::test_route_tag ... ok
+test test::test_schema_migration_rejects_second_run - should panic ... ok
+test test::test_schema_version_migration ... ok
+test test::test_set_pair_fee_bps_rejects_above_max - should panic ... ok
+test test::test_set_pair_fee_bps_round_trip ... ok
+test test::test_set_pair_liquidity_rejects_negative_value - should panic ... ok
+test test::test_set_pair_max_amount_rejects_zero - should panic ... ok
+test test::test_set_pair_min_amount_rejects_negative_value - should panic ... ok
+test test::test_timelock_allows_accept_after_delay ... ok
+test test::test_timelock_blocks_early_accept - should panic ... ok
+test test::test_timelock_cancel_clears_queue ... ok
+test test::test_timelock_defaults_to_zero ... ok
+test test::test_unregister_never_registered_pair_is_clean_noop_with_event ... ok
+test test::test_unregister_pair_removes_registration ... ok
+test test::test_unregister_then_reregister_preserves_metrics_by_default ... ok
+test test::test_version ... ok
+test test::test_version_is_independent_of_schema_version ... ok
+test test_batch::test_register_pairs_atomic_rollback_on_identity - should panic ... ok
+test test_batch::test_register_pairs_happy_path ... ok
+test test_batch::test_register_pairs_panics_when_uninitialized - should panic ... ok
+test test_batch::test_register_pairs_rejects_empty_batch - should panic ... ok
+test test_batch::test_register_pairs_rejects_too_large_batch - should panic ... ok
+test test_batch::test_register_pairs_rejects_when_paused - should panic ... ok
+test test_batch::test_register_pairs_single_entry_succeeds ... ok
+test test_batch::test_set_pair_fees_bps_atomic_rollback_on_high_fee - should panic ... ok
+test test_batch::test_set_pair_fees_bps_happy_path ... ok
+test test_batch::test_set_pair_fees_bps_panics_when_uninitialized - should panic ... ok
+test test_batch::test_set_pair_fees_bps_rejects_empty_batch - should panic ... ok
+test test_batch::test_set_pair_fees_bps_rejects_too_large_batch - should panic ... ok
+test test_batch::test_set_pair_fees_bps_rejects_unregistered_pair - should panic ... ok
+test test_batch::test_set_pair_fees_bps_rejects_when_paused - should panic ... ok
+test test_batch::test_set_pair_fees_bps_single_entry_succeeds ... ok
+test test_i14_pause_gating::test_double_pause_and_double_unpause_idempotent ... ok
+test test_i14_pause_gating::test_gated_entrypoint_succeeds_after_unpause ... ok
+test test_i14_pause_gating::test_is_paused_defaults_false_and_toggles ... ok
+test test_i14_pause_gating::test_pause_emits_event ... ok
+test test_i14_pause_gating::test_register_pair_rejected_while_paused - should panic ... ok
+test test_i14_pause_gating::test_set_pair_fee_bps_rejected_while_paused - should panic ... ok
+test test_i153_version_uninitialized::test_admin_operations_succeed_after_initialization ... ok
+test test_i153_version_uninitialized::test_cancel_admin_transfer_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_migrate_v1_to_v2_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_pause_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_propose_admin_transfer_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_read_only_operations_work_on_uninitialized_contract ... ok
+test test_i153_version_uninitialized::test_register_pair_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_register_pairs_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_schema_version_defaults_to_one_when_uninitialized ... ok
+test test_i153_version_uninitialized::test_set_fee_recipient_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_max_fee_absolute_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_oracle_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_cooldown_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_fee_bps_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_fees_bps_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_liquidity_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_max_amount_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_pair_min_amount_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_set_timelock_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_unpause_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_unregister_pair_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_upgrade_panics_on_uninitialized_contract - should panic ... ok
+test test_i153_version_uninitialized::test_version_and_schema_version_are_separate_concepts ... ok
+test test_i153_version_uninitialized::test_version_constant_independent_of_schema_migration ... ok
+test test_i153_version_uninitialized::test_version_returns_router_v2 ... ok
+test test_i15_bounds_liquidity::test_above_liquidity_rejected - should panic ... ok
+test test_i15_bounds_liquidity::test_above_max_rejected - should panic ... ok
+test test_i15_bounds_liquidity::test_below_min_rejected - should panic ... ok
+test test_i15_bounds_liquidity::test_liquidity_at_bound_is_accepted ... ok
+test test_i15_bounds_liquidity::test_max_amount_at_bound_is_accepted ... ok
+test test_i15_bounds_liquidity::test_min_amount_at_bound_is_accepted ... ok
+test test_i15_bounds_liquidity::test_set_pair_liquidity_rejects_negative - should panic ... ok
+test test_i15_bounds_liquidity::test_unset_bounds_behave_as_unbounded ... ok
+test test_i16_fee_arithmetic::test_overflow_path_returns_zero ... ok
+test test_i16_fee_arithmetic::test_quote_and_compute_agree_across_fee_tiers ... ok
+test test_i16_fee_arithmetic::test_quote_matches_compute_fee ... ok
+test test_i16_fee_arithmetic::test_quote_route_net_equals_amount_minus_fee_at_max_fee_bps ... ok
+test test_i16_fee_arithmetic::test_quote_route_net_equals_amount_minus_fee_at_zero_fee ... ok
+test test_i16_fee_arithmetic::test_route_counter_increments_and_never_panics ... ok
+test test_i16_fee_arithmetic::test_truncating_division_rounds_toward_zero ... ok
+test test_i17_migration::test_double_migrate_rejected - should panic ... ok
+test test_i17_migration::test_migrate_advances_to_two ... ok
+test test_i17_migration::test_migrate_requires_admin_auth - should panic ... ok
+test test_i17_migration::test_schema_version_defaults_to_one ... ok
+test test_i18_read_surface::test_finite_liquidity_rejects_route_above_cap - should panic ... ok
+test test::prop_zero_fee_bps_is_free ... ok
+test test_i18_read_surface::test_is_pair_active_requires_registration_and_liquidity ... ok
+test test_i18_read_surface::test_i128_max_sentinel_means_unbounded ... ok
+test test_i18_read_surface::test_pair_info_defaults_for_unconfigured_pair ... ok
+test test_i18_read_surface::test_last_route_at_none_before_some_after ... ok
+test test_i18_read_surface::test_pair_info_ext_defaults_for_unconfigured_pair ... ok
+test test_i18_read_surface::test_pair_info_ext_after_routing ... ok
+test test_i18_read_surface::test_pair_info_ext_matches_get_pair_info_base_fields ... ok
+test test_i18_read_surface::test_pair_info_reflects_bare_registration_only ... ok
+test test_i18_read_surface::test_pair_info_ext_reflects_configuration ... ok
+test test_i18_read_surface::test_pair_info_reflects_configuration ... ok
+test test_i18_read_surface::test_pair_volume_saturates_near_i128_max_without_panicking ... ok
+test test_i18_read_surface::test_pair_route_count_and_volume_stay_isolated_per_pair ... ok
+test test_i19_authorization::test_admin_can_register_with_auth ... ok
+test test_i19_authorization::test_cancel_admin_transfer_requires_admin - should panic ... ok
+test test_i18_read_surface::test_quote_route_is_non_mutating_and_matches_compute ... ok
+test test_i19_authorization::test_force_admin_transfer_requires_admin - should panic ... ok
+test test_i19_authorization::test_migrate_requires_admin - should panic ... ok
+test test_i19_authorization::test_pause_requires_admin - should panic ... ok
+test test_i19_authorization::test_propose_admin_transfer_requires_admin - should panic ... ok
+test test_i19_authorization::test_register_pair_requires_admin - should panic ... ok
+test test_i19_authorization::test_register_pairs_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_fee_recipient_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_max_fee_absolute_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_min_fee_absolute_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_oracle_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_cooldown_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_fee_bps_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_fees_bps_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_liquidity_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_max_amount_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_pair_min_amount_requires_admin - should panic ... ok
+test test_i19_authorization::test_set_timelock_requires_admin - should panic ... ok
+test test_i19_authorization::test_unpause_requires_admin - should panic ... ok
+test test_i19_authorization::test_unregister_pair_requires_admin - should panic ... ok
+test test_i19_authorization::test_upgrade_requires_admin - should panic ... ok
+test test_i225_remove_oracle::test_oracle_writes_liquidity_before_removal ... ok
+test test_i225_remove_oracle::test_admin_writes_liquidity_after_oracle_removal ... ok
+test test_i225_remove_oracle::test_remove_oracle_noop_emits_orac_rm_with_none ... ok
+test test_i225_remove_oracle::test_revoked_oracle_cannot_write_liquidity - should panic ... ok
+test test_i230_paused_sweep::test_accept_admin_transfer_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_cancel_admin_transfer_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_all_gated_entrypoints_resume_after_unpause ... ok
+test test_i230_paused_sweep::test_force_admin_transfer_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_migrate_v1_to_v2_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_compute_route_fee_rejected_while_paused - should panic ... ok
+test test_i230_paused_sweep::test_no_route_side_effects_while_paused ... ok
+test test_i230_paused_sweep::test_pause_idempotent_while_paused ... ok
+test test_i230_paused_sweep::test_purge_pair_metrics_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_propose_admin_transfer_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_register_pair_rejected_while_paused - should panic ... ok
+test test_i230_paused_sweep::test_register_pairs_rejected_while_paused - should panic ... ok
+test test_i230_paused_sweep::test_quote_route_available_while_paused ... ok
+test test_i230_paused_sweep::test_remove_oracle_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_max_fee_absolute_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_fee_recipient_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_oracle_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_pair_cooldown_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_pair_fee_bps_rejected_while_paused - should panic ... ok
+test test_i230_paused_sweep::test_set_pair_fees_bps_rejected_while_paused - should panic ... ok
+test test_i230_paused_sweep::test_set_pair_liquidity_oracle_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_pair_liquidity_admin_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_pair_max_amount_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_pair_min_amount_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_set_timelock_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_unpause_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_unregister_pair_succeeds_while_paused ... ok
+test test_i230_paused_sweep::test_upgrade_not_blocked_by_pause ... ok
+test test_i41_fee_cap::test_cap_of_zero_makes_routes_free ... FAILED
+test test_i41_fee_cap::test_fee_above_cap_is_clamped ... ok
+test test_i41_fee_cap::test_negative_cap_rejected - should panic ... FAILED
+test test_i41_fee_cap::test_fee_below_cap_is_unaffected ... ok
+test test_i41_fee_cap::test_no_absolute_cap_by_default ... ok
+test test_i41_fee_cap::test_quote_and_compute_agree_under_cap ... ok
+test test_i42_min_fee_floor::test_fee_above_floor_is_unaffected ... ok
+test test_i42_min_fee_floor::test_fee_below_floor_is_raised ... ok
+test test_i42_min_fee_floor::test_floor_exceeds_cap_floor_takes_precedence ... ok
+test test_i42_min_fee_floor::test_negative_floor_rejected - should panic ... ok
+test test_i42_min_fee_floor::test_no_absolute_floor_by_default ... ok
+test test_i42_min_fee_floor::test_quote_and_compute_agree_under_floor ... ok
+test test_i42_min_fee_floor::test_truncation_boundary_fee_bps_1 ... ok
+
+failures:
+
+---- test_i41_fee_cap::test_cap_of_zero_makes_routes_free stdout ----
+
+thread 'test_i41_fee_cap::test_cap_of_zero_makes_routes_free' (118121) panicked at /home/codespace/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-env-host-25.0.1/src/host.rs:907:9:
+HostError: Error(Contract, #6)
+
+Event log (newest first):
+   0: [Diagnostic Event] topics:[error, Error(Contract, #6)], data:"escalating error to panic"
+   1: [Diagnostic Event] topics:[error, Error(Contract, #6)], data:["contract call failed", set_max_fee_absolute, [0]]
+   2: [Failed Diagnostic Event (not emitted)] contract:CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4, topics:[error, Error(Contract, #6)], data:"caught error from function"
+   3: [Failed Diagnostic Event (not emitted)] contract:CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4, topics:[error, Error(Contract, #6)], data:"escalating error to panic"
+   4: [Failed Diagnostic Event (not emitted)] contract:CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4, topics:[error, Error(Contract, #6)], data:["failing with contract error", 6]
+   5: [Diagnostic Event] topics:[fn_call, CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4, set_max_fee_absolute], data:0
+
+Writing test snapshot file for test "test_i41_fee_cap::test_cap_of_zero_makes_routes_free" to "test_snapshots/test_i41_fee_cap/test_cap_of_zero_makes_routes_free.1.json".
+
+---- test_i41_fee_cap::test_negative_cap_rejected stdout ----
+Writing test snapshot file for test "test_i41_fee_cap::test_negative_cap_rejected" to "test_snapshots/test_i41_fee_cap/test_negative_cap_rejected.1.json".
+note: test did not panic as expected at src/lib.rs:4217:8
+
+failures:
+    test_i41_fee_cap::test_cap_of_zero_makes_routes_free
+    test_i41_fee_cap::test_negative_cap_rejected
+
+test result: FAILED. 232 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.96s
+
+error: test failed, to rerun pass `-p stableroute-contracts --lib`
+
+*** result: Failure(101)

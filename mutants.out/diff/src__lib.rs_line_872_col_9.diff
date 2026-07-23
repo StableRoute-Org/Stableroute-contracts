@@ -1,0 +1,23 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_last_route_at -> Option<u64> with None
+@@ -864,19 +864,17 @@
+         let fee = Self::apply_fee_cap(&env, fee);
+         let fee = Self::apply_fee_floor(&env, fee);
+         (fee, amount - fee)
+     }
+ 
+     /// Read the most recent ledger timestamp at which `compute_route_fee`
+     /// touched this pair. None when never routed.
+     pub fn get_pair_last_route_at(env: Env, source: Symbol, destination: Symbol) -> Option<u64> {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::PairLastRouteAt(source, destination))
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the per-pair route cooldown in seconds.
+     ///
+     /// While set to a non-zero value, `compute_route_fee` rejects a call
+     /// for the pair until at least `cooldown_secs` seconds have elapsed
+     /// since the pair's last successful route (`PairLastRouteAt`).
+     /// Setting `0` (the default) disables the rate limit for the pair.

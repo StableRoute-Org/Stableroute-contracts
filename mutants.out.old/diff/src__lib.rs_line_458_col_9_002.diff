@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::read_pair_liquidity -> i128 with -1
+@@ -450,20 +450,17 @@
+     /// Returns `0` (no liquidity configured) when the slot is absent —
+     /// the documented default for getters and aggregate reads. Note that
+     /// [`Self::compute_route_fee`] intentionally uses `i128::MAX` as its
+     /// own unbounded sentinel (a context-dependent default, documented
+     /// in the [`DataKey::PairLiquidity`] variant and `storage.md`).
+     /// Callers needing the unbounded semantic should read the slot
+     /// directly with `unwrap_or(i128::MAX)`.
+     fn read_pair_liquidity(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+-            .unwrap_or(0)
++        -1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair route cooldown from persistent storage.
+     ///
+     /// Returns `0` (rate limit disabled) when the slot is absent — the
+     /// documented default for an unconfigured pair. This is the single
+     /// source of truth for the [`DataKey::PairCooldown`] sentinel value.
+     fn read_pair_cooldown(env: &Env, source: &Symbol, destination: &Symbol) -> u64 {

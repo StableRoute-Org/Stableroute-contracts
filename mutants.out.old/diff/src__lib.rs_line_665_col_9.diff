@@ -1,0 +1,36 @@
+--- src/lib.rs
++++ replace StableRouteRouter::propose_admin_transfer with ()
+@@ -657,32 +657,17 @@
+     /// Step 1 of admin handover. Current admin proposes a new admin;
+     /// the new admin must then accept via `accept_admin_transfer` once the
+     /// governance timelock (if any) has elapsed.
+     ///
+     /// Stamps `PendingAdminEta = now + timelock` and emits a `queued`
+     /// event carrying the new admin and the eta so watchers get a warning
+     /// window before control can actually change hands.
+     pub fn propose_admin_transfer(env: Env, new_admin: Address) {
+-        Self::require_admin(&env);
+-        let delay: u64 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::Timelock)
+-            .unwrap_or(0);
+-        let eta = env.ledger().timestamp().saturating_add(delay);
+-        env.storage()
+-            .instance()
+-            .set(&DataKey::PendingAdmin, &new_admin.clone());
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::PendingAdminEta, &eta);
+-        Self::bump_instance_ttl(&env);
+-        env.events()
+-            .publish((symbol_short!("queued"),), (new_admin, eta));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Force-complete an admin handover after the timelock has elapsed,
+     /// without requiring the new admin to call `accept_admin_transfer`.
+     ///
+     /// Admin-gated. Requires that `propose_admin_transfer` was already
+     /// called with the same `new_admin` and that the timelock delay has
+     /// elapsed. Emits the same `executed` event as `accept_admin_transfer`

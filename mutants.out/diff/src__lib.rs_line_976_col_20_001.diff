@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace < with > in StableRouteRouter::set_max_fee_absolute
+@@ -968,17 +968,17 @@
+ 
+     /// Admin sets the absolute per-route fee ceiling (in source units).
+     /// Rejects negative caps with `AmountMustBePositive` (#6). A cap of `0`
+     /// makes every route effectively free. Emits a `maxfee` event. The cap
+     /// composes with `MAX_FEE_BPS`: a route is charged
+     /// `min(amount * fee_bps / 10_000, max_fee_absolute)`.
+     pub fn set_max_fee_absolute(env: Env, max_fee: i128) {
+         Self::require_admin(&env);
+-        if max_fee < 0 {
++        if max_fee > /* ~ changed by cargo-mutants ~ */ 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+         env.storage()
+             .persistent()
+             .set(&DataKey::MaxFeeAbsolute, &max_fee);
+         env.events().publish((symbol_short!("maxfee"),), max_fee);
+     }
+ 

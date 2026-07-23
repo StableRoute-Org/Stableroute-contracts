@@ -1,0 +1,25 @@
+--- src/lib.rs
++++ replace StableRouteRouter::clear_pair_config with ()
+@@ -1171,21 +1171,17 @@
+             .set(&DataKey::PairMinAmount(source, destination), &min_amount);
+     }
+ 
+     /// Clear all pair-scoped config that should not survive unregister + re-register.
+     ///
+     /// This intentionally excludes route counters, cumulative volume, and last-route timestamp;
+     /// those operational-history slots are tracked separately from live pair configuration.
+     fn clear_pair_config(env: &Env, source: Symbol, destination: Symbol) {
+-        let storage = env.storage().persistent();
+-        storage.remove(&DataKey::PairMinAmount(source.clone(), destination.clone()));
+-        storage.remove(&DataKey::PairMaxAmount(source.clone(), destination.clone()));
+-        storage.remove(&DataKey::PairLiquidity(source.clone(), destination.clone()));
+-        storage.remove(&DataKey::PairCooldown(source, destination));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Unregister a previously-registered pair. Admin-gated and idempotent.
+     ///
+     /// Clears the pair's min amount, max amount, and liquidity config slots so
+     /// re-registering the same corridor starts from documented defaults instead of reviving
+     /// stale config. The fee is preserved so a previously configured rate survives
+     /// unregister + re-register cycles.

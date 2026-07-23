@@ -1,0 +1,28 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_min_fee_absolute with ()
+@@ -1001,24 +1001,17 @@
+         env.storage().persistent().get(&DataKey::MinFeeAbsolute)
+     }
+ 
+     /// Admin sets the absolute per-route fee floor (in source units).
+     /// Rejects negative floors with `AmountMustBePositive` (#6). Emits
+     /// a `minfee` event. The floor composes with the fee cap: a route is
+     /// charged `max(min(amount * fee_bps / 10_000, max_fee_absolute), min_fee_absolute)`.
+     pub fn set_min_fee_absolute(env: Env, min_fee: i128) {
+-        Self::require_admin(&env);
+-        if min_fee < 0 {
+-            panic_with_error!(&env, RouterError::AmountMustBePositive);
+-        }
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::MinFeeAbsolute, &min_fee);
+-        env.events().publish((symbol_short!("minfee"),), min_fee);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the reported liquidity for a pair (0 when absent).
+     pub fn get_pair_liquidity(env: Env, source: Symbol, destination: Symbol) -> i128 {
+         Self::read_pair_liquidity(&env, &source, &destination)
+     }
+ 
+     /// Read the configured liquidity oracle, if any.

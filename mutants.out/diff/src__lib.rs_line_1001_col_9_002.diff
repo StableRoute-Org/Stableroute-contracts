@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_min_fee_absolute -> Option<i128> with Some(1)
+@@ -993,17 +993,17 @@
+         {
+             Some(floor) => fee.max(floor),
+             None => fee,
+         }
+     }
+ 
+     /// Read the absolute per-route fee floor, or `None` when unset.
+     pub fn get_min_fee_absolute(env: Env) -> Option<i128> {
+-        env.storage().persistent().get(&DataKey::MinFeeAbsolute)
++        Some(1) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the absolute per-route fee floor (in source units).
+     /// Rejects negative floors with `AmountMustBePositive` (#6). Emits
+     /// a `minfee` event. The floor composes with the fee cap: a route is
+     /// charged `max(min(amount * fee_bps / 10_000, max_fee_absolute), min_fee_absolute)`.
+     pub fn set_min_fee_absolute(env: Env, min_fee: i128) {
+         Self::require_admin(&env);

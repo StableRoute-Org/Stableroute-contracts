@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::__constructor with ()
+@@ -531,20 +531,17 @@
+     ///
+     /// Running as the constructor closes the init front-running window:
+     /// the admin slot is written in the same transaction that deploys the
+     /// contract (`register(StableRouteRouter, (admin,))`), so there is no
+     /// observable deployed-but-uninitialized state for an attacker to race
+     /// a separate `init` call into. Requires `admin.require_auth()` and
+     /// emits the `init` event for indexers.
+     pub fn __constructor(env: Env, admin: Address) {
+-        admin.require_auth();
+-        env.storage().instance().set(&DataKey::Admin, &admin);
+-        Self::bump_instance_ttl(&env);
+-        env.events().publish((symbol_short!("init"),), admin);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Legacy initializer, retained for ABI compatibility only.
+     ///
+     /// The admin is now set by [`Self::__constructor`] at deploy time, so
+     /// the slot is always populated and this entrypoint can never claim
+     /// it. It unconditionally panics with
+     /// [`RouterError::AlreadyInitialized`], preserving the historical

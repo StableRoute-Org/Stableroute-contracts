@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_max_fee_absolute -> Option<i128> with None
+@@ -958,17 +958,17 @@
+         {
+             Some(cap) => fee.min(cap),
+             None => fee,
+         }
+     }
+ 
+     /// Read the absolute per-route fee ceiling, or `None` when unset.
+     pub fn get_max_fee_absolute(env: Env) -> Option<i128> {
+-        env.storage().persistent().get(&DataKey::MaxFeeAbsolute)
++        None /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the absolute per-route fee ceiling (in source units).
+     /// Rejects negative caps with `AmountMustBePositive` (#6). A cap of `0`
+     /// makes every route effectively free. Emits a `maxfee` event. The cap
+     /// composes with `MAX_FEE_BPS`: a route is charged
+     /// `min(amount * fee_bps / 10_000, max_fee_absolute)`.
+     pub fn set_max_fee_absolute(env: Env, max_fee: i128) {

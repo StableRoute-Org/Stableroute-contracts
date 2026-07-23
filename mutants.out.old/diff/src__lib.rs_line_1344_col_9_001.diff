@@ -1,0 +1,146 @@
+--- src/lib.rs
++++ replace StableRouteRouter::compute_route_fee -> i128 with 1
+@@ -1336,142 +1336,17 @@
+     /// oracle configured" behaviour. When a decrement does occur a
+     /// `liq_used` event carrying `(source, destination, remaining_liquidity)`
+     /// is emitted. The slot TTL is extended on each write.
+     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
+         // Acquire the reentrancy lock at the very start so that every exit
+         // path — success or panic — can explicitly release it. This ensures
+         // future refactors that add new checks after this point cannot
+         // accidentally leak the lock.
+-        Self::enter_nonreentrant(&env);
+-
+-        if Self::paused(&env) {
+-            Self::route_abort(&env, RouterError::ContractPaused);
+-        }
+-        if amount <= 0 {
+-            Self::route_abort(&env, RouterError::AmountMustBePositive);
+-        }
+-
+-        if !env
+-            .storage()
+-            .persistent()
+-            .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+-            .unwrap_or(false)
+-        {
+-            Self::route_abort(&env, RouterError::PairNotRegistered);
+-        }
+-        let min_amount = Self::read_pair_min(&env, &source, &destination);
+-        if amount < min_amount {
+-            Self::route_abort(&env, RouterError::AmountBelowMin);
+-        }
+-        let max_amount = Self::read_pair_max(&env, &source, &destination);
+-        if amount > max_amount {
+-            Self::route_abort(&env, RouterError::AmountAboveMax);
+-        }
+-        let liquidity: i128 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+-            .unwrap_or(i128::MAX);
+-        if amount > liquidity {
+-            Self::route_abort(&env, RouterError::InsufficientLiquidity);
+-        }
+-
+-        // Per-pair rate limit. A non-zero cooldown forces a minimum gap
+-        // between successive routes for the pair. The first route (no
+-        // recorded timestamp) is always allowed; cooldown == 0 disables
+-        // the check entirely, preserving the prior behaviour. Compare via
+-        // addition (last + cooldown) rather than subtraction to avoid any
+-        // u64 underflow. `last + cooldown` cannot overflow u64 either:
+-        // `set_pair_cooldown` rejects any `cooldown` above
+-        // `MAX_COOLDOWN_SECS` (30 days), and `last` is a ledger timestamp
+-        // (seconds since epoch) that would need to be within 30 days of
+-        // `u64::MAX` — many orders of magnitude beyond any plausible
+-        // ledger closing time — before this addition could wrap.
+-        let cooldown = Self::read_pair_cooldown(&env, &source, &destination);
+-        if cooldown > 0 {
+-            if let Some(last) = env
+-                .storage()
+-                .persistent()
+-                .get::<_, u64>(&DataKey::PairLastRouteAt(
+-                    source.clone(),
+-                    destination.clone(),
+-                ))
+-            {
+-                if env.ledger().timestamp() < last + cooldown {
+-                    Self::exit_nonreentrant(&env);
+-                    panic_with_error!(&env, RouterError::RouteCooldownActive);
+-                }
+-            }
+-        }
+-
+-        // EFFECTS: after all route guards above have passed, debit
+-        // liquidity, write counters/timestamps, and emit events.
+-        // When no oracle has set a liquidity value the pair is treated as
+-        // unbounded — no decrement and no liq_used event are emitted.
+-        if liquidity != i128::MAX {
+-            let remaining = liquidity.saturating_sub(amount);
+-            env.storage().persistent().set(
+-                &DataKey::PairLiquidity(source.clone(), destination.clone()),
+-                &remaining,
+-            );
+-            env.events().publish(
+-                (symbol_short!("liq_used"),),
+-                (source.clone(), destination.clone(), remaining),
+-            );
+-        }
+-        let total: u64 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::TotalRoutesAllTime)
+-            .unwrap_or(0);
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::TotalRoutesAllTime, &total.saturating_add(1));
+-        let pair_count: u64 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::PairRouteCount(
+-                source.clone(),
+-                destination.clone(),
+-            ))
+-            .unwrap_or(0);
+-        env.storage().persistent().set(
+-            &DataKey::PairRouteCount(source.clone(), destination.clone()),
+-            &pair_count.saturating_add(1),
+-        );
+-        let pair_volume: i128 = env
+-            .storage()
+-            .persistent()
+-            .get(&DataKey::PairVolume(source.clone(), destination.clone()))
+-            .unwrap_or(0);
+-        env.storage().persistent().set(
+-            &DataKey::PairVolume(source.clone(), destination.clone()),
+-            &pair_volume.saturating_add(amount),
+-        );
+-        env.storage().persistent().set(
+-            &DataKey::PairLastRouteAt(source.clone(), destination.clone()),
+-            &env.ledger().timestamp(),
+-        );
+-        env.events().publish(
+-            (symbol_short!("route"),),
+-            (source.clone(), destination.clone(), amount),
+-        );
+-        let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
+-        // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
+-        // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
+-        // multiplication is bounded.
+-        let fee = amount
+-            .checked_mul(fee_bps as i128)
+-            .map(|n| n / BPS_DENOMINATOR)
+-            .unwrap_or(0);
+-        let fee = Self::apply_fee_cap(&env, fee);
+-        let fee = Self::apply_fee_floor(&env, fee);
+-        Self::exit_nonreentrant(&env);
+-        fee
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Compute a deterministic, direction-sensitive route identifier for a
+     /// `(source, destination)` pair.
+     ///
+     /// The tag is `keccak256(xdr(source) || xdr(destination))`: a stable
+     /// 32-byte digest that depends on the encoded inputs in order. Properties:
+     ///

@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::is_pair_registered -> bool with false
+@@ -1228,20 +1228,17 @@
+             destination.clone(),
+         ));
+         env.events()
+             .publish((symbol_short!("pair_mrst"),), (source, destination));
+     }
+ 
+     /// Returns `true` iff `register_pair` has been called for this pair.
+     pub fn is_pair_registered(env: Env, source: Symbol, destination: Symbol) -> bool {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::Pair(source, destination))
+-            .unwrap_or(false)
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Set the routing fee in basis points for a registered pair.
+     ///
+     /// Admin-gated. Rejects values above [`MAX_FEE_BPS`] with
+     /// [`RouterError::FeeBpsTooHigh`]. Idempotent: setting the same
+     /// fee twice is a re-assert and harmless.
+     ///

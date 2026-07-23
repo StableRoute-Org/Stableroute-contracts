@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pending_admin_eta -> Option<u64> with Some(0)
+@@ -594,17 +594,17 @@
+         env.storage()
+             .persistent()
+             .set(&DataKey::Timelock, &delay_seconds);
+     }
+ 
+     /// Read the earliest timestamp at which the pending admin transfer may
+     /// be accepted, or `None` when no transfer is queued.
+     pub fn get_pending_admin_eta(env: Env) -> Option<u64> {
+-        env.storage().persistent().get(&DataKey::PendingAdminEta)
++        Some(0) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Cancel a pending handover, clearing both the pending admin and its
+     /// queued eta. No-op if none is pending.
+     pub fn cancel_admin_transfer(env: Env) {
+         Self::require_admin(&env);
+         env.storage().instance().remove(&DataKey::PendingAdmin);
+         env.storage().persistent().remove(&DataKey::PendingAdminEta);

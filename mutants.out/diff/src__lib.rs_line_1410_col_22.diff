@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace != with == in StableRouteRouter::compute_route_fee
+@@ -1402,17 +1402,17 @@
+                 }
+             }
+         }
+ 
+         // EFFECTS: after all route guards above have passed, debit
+         // liquidity, write counters/timestamps, and emit events.
+         // When no oracle has set a liquidity value the pair is treated as
+         // unbounded — no decrement and no liq_used event are emitted.
+-        if liquidity != i128::MAX {
++        if liquidity == /* ~ changed by cargo-mutants ~ */ i128::MAX {
+             let remaining = liquidity.saturating_sub(amount);
+             env.storage().persistent().set(
+                 &DataKey::PairLiquidity(source.clone(), destination.clone()),
+                 &remaining,
+             );
+             env.events().publish(
+                 (symbol_short!("liq_used"),),
+                 (source.clone(), destination.clone(), remaining),

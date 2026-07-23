@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with < in StableRouteRouter::compute_route_fee
+@@ -1366,17 +1366,17 @@
+         if amount > max_amount {
+             Self::route_abort(&env, RouterError::AmountAboveMax);
+         }
+         let liquidity: i128 = env
+             .storage()
+             .persistent()
+             .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+             .unwrap_or(i128::MAX);
+-        if amount > liquidity {
++        if amount < /* ~ changed by cargo-mutants ~ */ liquidity {
+             Self::route_abort(&env, RouterError::InsufficientLiquidity);
+         }
+ 
+         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
+         // between successive routes for the pair. The first route (no
+         // recorded timestamp) is always allowed; cooldown == 0 disables
+         // the check entirely, preserving the prior behaviour. Compare via
+         // addition (last + cooldown) rather than subtraction to avoid any

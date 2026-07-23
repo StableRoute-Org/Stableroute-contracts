@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_volume -> i128 with -1
+@@ -922,20 +922,17 @@
+             .get(&DataKey::PairRouteCount(source, destination))
+             .unwrap_or(0)
+     }
+ 
+     /// Read the per-pair cumulative routed volume (sum of `amount` in
+     /// source units) for `(source, destination)`. Returns 0 when the
+     /// pair has never been routed.
+     pub fn get_pair_volume(env: Env, source: Symbol, destination: Symbol) -> i128 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::PairVolume(source, destination))
+-            .unwrap_or(0)
++        -1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the address that receives protocol fees at
+     /// settlement time. The router itself never custodies funds.
+     pub fn set_fee_recipient(env: Env, recipient: Address) {
+         Self::require_admin(&env);
+         env.storage()
+             .persistent()

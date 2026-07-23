@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::upgrade with ()
+@@ -1500,20 +1500,17 @@
+     /// ## Trade-off: not paused-gated
+     ///
+     /// An emergency pause should arguably still allow the admin to deploy a
+     /// fix. We therefore skip the `ContractPaused` check — a paused router
+     /// can be upgraded, which is consistent with fixing the bug that caused
+     /// the pause. The admin can already unpause, so there is no escalation
+     /// path through this exception.
+     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+-        Self::require_admin(&env);
+-        env.events()
+-            .publish((symbol_short!("upgraded"),), &new_wasm_hash);
+-        env.deployer().update_current_contract_wasm(new_wasm_hash);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Test-only mock that re-enters the router from a nested contract call.
+ ///
+ /// The mock stays minimal on purpose: it exists only to simulate a malicious
+ /// callback path and trigger the router's reentrancy guard in a realistic
+ /// nested-call shape.

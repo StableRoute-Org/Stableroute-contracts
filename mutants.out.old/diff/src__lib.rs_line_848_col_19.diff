@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace <= with > in StableRouteRouter::quote_route
+@@ -840,17 +840,17 @@
+     /// Read-only quote of fee + net for a pair without writing the
+     /// timestamp / counter. Useful as a planner-only hook.
+     pub fn quote_route(
+         env: Env,
+         source: Symbol,
+         destination: Symbol,
+         amount: i128,
+     ) -> (i128, i128) {
+-        if amount <= 0 {
++        if amount > /* ~ changed by cargo-mutants ~ */ 0 {
+             panic_with_error!(&env, RouterError::AmountMustBePositive);
+         }
+         if !env
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {

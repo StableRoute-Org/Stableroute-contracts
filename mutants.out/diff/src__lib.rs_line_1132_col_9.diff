@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_max_amount -> i128 with 0
+@@ -1124,17 +1124,17 @@
+         env.events().publish(
+             (symbol_short!("liq_set"),),
+             (source, destination, liquidity),
+         );
+     }
+ 
+     /// Read the per-pair maximum (i128::MAX when absent).
+     pub fn get_pair_max_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
+-        Self::read_pair_max(&env, &source, &destination)
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the per-pair maximum routable amount.
+     ///
+     /// Requires the pair to already be registered via
+     /// [`Self::register_pair`]; rejects an unregistered pair with
+     /// [`RouterError::PairNotRegistered`] (#5) so the maximum can never be
+     /// configured for a corridor that was never (or no longer) enabled.

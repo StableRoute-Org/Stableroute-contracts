@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace < with > in StableRouteRouter::accept_admin_transfer
+@@ -643,17 +643,17 @@
+         }
+         // Honour the governance timelock: the handover cannot execute until
+         // its stamped eta has been reached.
+         let eta: u64 = env
+             .storage()
+             .persistent()
+             .get(&DataKey::PendingAdminEta)
+             .unwrap_or(0);
+-        if env.ledger().timestamp() < eta {
++        if env.ledger().timestamp() > /* ~ changed by cargo-mutants ~ */ eta {
+             panic_with_error!(&env, RouterError::TimelockNotElapsed);
+         }
+         Self::finalize_admin_transfer(&env, caller);
+     }
+ 
+     /// Step 1 of admin handover. Current admin proposes a new admin;
+     /// the new admin must then accept via `accept_admin_transfer` once the
+     /// governance timelock (if any) has elapsed.

@@ -1,0 +1,26 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_limits -> RouterLimits with Default::default()
+@@ -494,22 +494,17 @@
+     /// constants [`MAX_FEE_BPS`], [`BPS_DENOMINATOR`], [`MAX_BATCH_SIZE`], and
+     /// [`MAX_COOLDOWN_SECS`]. This is the on-chain discovery surface: an
+     /// on-chain caller or a client that did not compile against this crate
+     /// can learn the enforced bounds from a single read instead of having to
+     /// know the crate's `pub const`s.
+     ///
+     /// Read-only and auth-free; never touches storage.
+     pub fn get_limits(_env: Env) -> RouterLimits {
+-        RouterLimits {
+-            max_fee_bps: MAX_FEE_BPS,
+-            bps_denominator: BPS_DENOMINATOR,
+-            max_batch_size: MAX_BATCH_SIZE,
+-            max_cooldown_secs: MAX_COOLDOWN_SECS,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Migrate the schema from v1 to v2. Admin-gated; panics with
+     /// MigrationVersionMismatch on a non-v1 starting state. v2 readers
+     /// default sensibly when their new slots are absent, so the body
+     /// only stamps the new SchemaVersion.
+     pub fn migrate_v1_to_v2(env: Env) {
+         Self::require_admin(&env);

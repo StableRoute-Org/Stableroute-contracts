@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_total_routes_all_time -> u64 with 1
+@@ -902,20 +902,17 @@
+     /// Read the per-pair route cooldown in seconds (0 when absent,
+     /// meaning the rate limit is disabled for the pair).
+     pub fn get_pair_cooldown(env: Env, source: Symbol, destination: Symbol) -> u64 {
+         Self::read_pair_cooldown(&env, &source, &destination)
+     }
+ 
+     /// Read the protocol-wide lifetime counter of route quotes.
+     pub fn get_total_routes_all_time(env: Env) -> u64 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::TotalRoutesAllTime)
+-            .unwrap_or(0)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair lifetime count of `compute_route_fee`
+     /// invocations for `(source, destination)`. Returns 0 when the pair
+     /// has never been routed.
+     pub fn get_pair_route_count(env: Env, source: Symbol, destination: Symbol) -> u64 {
+         env.storage()
+             .persistent()

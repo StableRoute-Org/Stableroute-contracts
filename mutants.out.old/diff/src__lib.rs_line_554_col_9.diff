@@ -1,0 +1,22 @@
+--- src/lib.rs
++++ replace StableRouteRouter::init with ()
+@@ -546,18 +546,17 @@
+     ///
+     /// The admin is now set by [`Self::__constructor`] at deploy time, so
+     /// the slot is always populated and this entrypoint can never claim
+     /// it. It unconditionally panics with
+     /// [`RouterError::AlreadyInitialized`], preserving the historical
+     /// `#1` semantics for any client still calling `init` post-deploy and
+     /// guaranteeing an attacker can never seize the admin role via `init`.
+     pub fn init(env: Env, admin: Address) {
+-        let _ = admin;
+-        panic_with_error!(&env, RouterError::AlreadyInitialized);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns true iff the router is currently paused.
+     pub fn is_paused(env: Env) -> bool {
+         Self::paused(&env)
+     }
+ 
+     /// Resume after a pause. Admin-gated and idempotent.

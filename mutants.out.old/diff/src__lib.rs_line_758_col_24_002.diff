@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with >= in StableRouteRouter::register_pairs
+@@ -750,17 +750,17 @@
+     /// [`MAX_BATCH_SIZE`] entries to bound gas; exceeding it panics with
+     /// [`RouterError::BatchTooLarge`].
+     pub fn register_pairs(env: Env, pairs: Vec<(Symbol, Symbol)>) {
+         Self::require_not_paused(&env);
+         Self::require_admin(&env);
+         if pairs.is_empty() {
+             panic_with_error!(&env, RouterError::EmptyBatch);
+         }
+-        if pairs.len() > MAX_BATCH_SIZE {
++        if pairs.len() >= /* ~ changed by cargo-mutants ~ */ MAX_BATCH_SIZE {
+             panic_with_error!(&env, RouterError::BatchTooLarge);
+         }
+         for (source, destination) in pairs.iter() {
+             if source == destination {
+                 panic_with_error!(&env, RouterError::SourceEqualsDestination);
+             }
+             env.storage()
+                 .persistent()

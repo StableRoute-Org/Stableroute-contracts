@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace StableRouteRouter::get_pair_min_amount -> i128 with -1
+@@ -1146,17 +1146,17 @@
+         Self::require_pair_registered(&env, &source, &destination);
+         env.storage()
+             .persistent()
+             .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
+     }
+ 
+     /// Read the per-pair minimum (0 when absent).
+     pub fn get_pair_min_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
+-        Self::read_pair_min(&env, &source, &destination)
++        -1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin sets the per-pair minimum routable amount.
+     ///
+     /// Requires the pair to already be registered via
+     /// [`Self::register_pair`]; rejects an unregistered pair with
+     /// [`RouterError::PairNotRegistered`] (#5) so the minimum can never be
+     /// configured for a corridor that was never (or no longer) enabled.

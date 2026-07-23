@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::read_pair_fee_bps -> u32 with 1
+@@ -410,20 +410,17 @@
+     }
+ 
+     /// Read the per-pair fee in basis points from persistent storage.
+     ///
+     /// Returns `0` (free) when the slot is absent — the documented
+     /// default for an unconfigured, registered pair. This is the single
+     /// source of truth for the [`DataKey::PairFeeBps`] sentinel value.
+     fn read_pair_fee_bps(env: &Env, source: &Symbol, destination: &Symbol) -> u32 {
+-        env.storage()
+-            .persistent()
+-            .get(&DataKey::PairFeeBps(source.clone(), destination.clone()))
+-            .unwrap_or(0)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair minimum routable amount from persistent storage.
+     ///
+     /// Returns `0` (no floor) when the slot is absent — the documented
+     /// default. This is the single source of truth for the
+     /// [`DataKey::PairMinAmount`] sentinel value.
+     fn read_pair_min(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {

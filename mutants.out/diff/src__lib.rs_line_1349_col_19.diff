@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace <= with > in StableRouteRouter::compute_route_fee
+@@ -1341,17 +1341,17 @@
+         // path — success or panic — can explicitly release it. This ensures
+         // future refactors that add new checks after this point cannot
+         // accidentally leak the lock.
+         Self::enter_nonreentrant(&env);
+ 
+         if Self::paused(&env) {
+             Self::route_abort(&env, RouterError::ContractPaused);
+         }
+-        if amount <= 0 {
++        if amount > /* ~ changed by cargo-mutants ~ */ 0 {
+             Self::route_abort(&env, RouterError::AmountMustBePositive);
+         }
+ 
+         if !env
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)

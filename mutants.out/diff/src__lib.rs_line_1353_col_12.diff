@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ delete ! in StableRouteRouter::compute_route_fee
+@@ -1345,17 +1345,17 @@
+ 
+         if Self::paused(&env) {
+             Self::route_abort(&env, RouterError::ContractPaused);
+         }
+         if amount <= 0 {
+             Self::route_abort(&env, RouterError::AmountMustBePositive);
+         }
+ 
+-        if !env
++        if  /* ~ changed by cargo-mutants ~ */env
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             Self::route_abort(&env, RouterError::PairNotRegistered);
+         }
+         let min_amount = Self::read_pair_min(&env, &source, &destination);

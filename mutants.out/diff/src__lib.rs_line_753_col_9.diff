@@ -1,0 +1,38 @@
+--- src/lib.rs
++++ replace StableRouteRouter::register_pairs with ()
+@@ -745,34 +745,17 @@
+     /// **All-or-nothing:** if any entry fails validation the entire
+     /// transaction is rolled back (Soroban transactions are atomic), so
+     /// callers must ensure every pair is valid before invoking this. The
+     /// batch must contain at least one entry; an empty batch panics with
+     /// [`RouterError::EmptyBatch`]. The batch is also capped at
+     /// [`MAX_BATCH_SIZE`] entries to bound gas; exceeding it panics with
+     /// [`RouterError::BatchTooLarge`].
+     pub fn register_pairs(env: Env, pairs: Vec<(Symbol, Symbol)>) {
+-        Self::require_not_paused(&env);
+-        Self::require_admin(&env);
+-        if pairs.is_empty() {
+-            panic_with_error!(&env, RouterError::EmptyBatch);
+-        }
+-        if pairs.len() > MAX_BATCH_SIZE {
+-            panic_with_error!(&env, RouterError::BatchTooLarge);
+-        }
+-        for (source, destination) in pairs.iter() {
+-            if source == destination {
+-                panic_with_error!(&env, RouterError::SourceEqualsDestination);
+-            }
+-            env.storage()
+-                .persistent()
+-                .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+-            env.events()
+-                .publish((symbol_short!("pair_reg"),), (source, destination));
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns true iff the pair is registered AND has non-zero
+     /// reported liquidity. Useful as a quick is-routable check.
+     pub fn is_pair_active(env: Env, source: Symbol, destination: Symbol) -> bool {
+         let s = env.storage().persistent();
+         if !s
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))

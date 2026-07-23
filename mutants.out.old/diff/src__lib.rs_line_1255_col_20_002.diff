@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with >= in StableRouteRouter::set_pair_fee_bps
+@@ -1247,17 +1247,17 @@
+     ///
+     /// Requires the pair to already be registered via
+     /// [`Self::register_pair`]; rejects an unregistered pair with
+     /// [`RouterError::PairNotRegistered`] (#5) so the fee can never be
+     /// configured for a corridor that was never (or no longer) enabled.
+     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
+         Self::require_not_paused(&env);
+         Self::require_admin(&env);
+-        if fee_bps > MAX_FEE_BPS {
++        if fee_bps >= /* ~ changed by cargo-mutants ~ */ MAX_FEE_BPS {
+             panic_with_error!(&env, RouterError::FeeBpsTooHigh);
+         }
+         Self::require_pair_registered(&env, &source, &destination);
+         env.storage().persistent().set(
+             &DataKey::PairFeeBps(source.clone(), destination.clone()),
+             &fee_bps,
+         );
+         env.events()

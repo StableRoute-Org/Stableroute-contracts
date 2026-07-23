@@ -1,0 +1,28 @@
+--- src/lib.rs
++++ replace StableRouteRouter::apply_fee_cap -> i128 with 0
+@@ -946,24 +946,17 @@
+     pub fn get_fee_recipient(env: Env) -> Option<Address> {
+         env.storage().persistent().get(&DataKey::FeeRecipient)
+     }
+ 
+     /// Clamp `fee` to the configured absolute ceiling when one is set.
+     /// Both the relative `MAX_FEE_BPS` bound and this absolute bound apply;
+     /// the tighter of the two wins. No-op when no absolute cap is configured.
+     fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
+-        match env
+-            .storage()
+-            .persistent()
+-            .get::<_, i128>(&DataKey::MaxFeeAbsolute)
+-        {
+-            Some(cap) => fee.min(cap),
+-            None => fee,
+-        }
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the absolute per-route fee ceiling, or `None` when unset.
+     pub fn get_max_fee_absolute(env: Env) -> Option<i128> {
+         env.storage().persistent().get(&DataKey::MaxFeeAbsolute)
+     }
+ 
+     /// Admin sets the absolute per-route fee ceiling (in source units).

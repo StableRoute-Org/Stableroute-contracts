@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace < with == in StableRouteRouter::compute_route_fee
+@@ -1354,17 +1354,17 @@
+             .storage()
+             .persistent()
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             Self::route_abort(&env, RouterError::PairNotRegistered);
+         }
+         let min_amount = Self::read_pair_min(&env, &source, &destination);
+-        if amount < min_amount {
++        if amount == /* ~ changed by cargo-mutants ~ */ min_amount {
+             Self::route_abort(&env, RouterError::AmountBelowMin);
+         }
+         let max_amount = Self::read_pair_max(&env, &source, &destination);
+         if amount > max_amount {
+             Self::route_abort(&env, RouterError::AmountAboveMax);
+         }
+         let liquidity: i128 = env
+             .storage()

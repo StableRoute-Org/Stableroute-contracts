@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_fee_recipient with ()
+@@ -931,20 +931,17 @@
+             .persistent()
+             .get(&DataKey::PairVolume(source, destination))
+             .unwrap_or(0)
+     }
+ 
+     /// Admin sets the address that receives protocol fees at
+     /// settlement time. The router itself never custodies funds.
+     pub fn set_fee_recipient(env: Env, recipient: Address) {
+-        Self::require_admin(&env);
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::FeeRecipient, &recipient);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the configured fee recipient, if any.
+     pub fn get_fee_recipient(env: Env) -> Option<Address> {
+         env.storage().persistent().get(&DataKey::FeeRecipient)
+     }
+ 
+     /// Clamp `fee` to the configured absolute ceiling when one is set.

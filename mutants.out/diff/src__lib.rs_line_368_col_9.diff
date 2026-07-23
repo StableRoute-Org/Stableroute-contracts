@@ -1,0 +1,23 @@
+--- src/lib.rs
++++ replace StableRouteRouter::exit_nonreentrant with ()
+@@ -360,19 +360,17 @@
+             .persistent()
+             .set(&DataKey::ReentrancyLock, &true);
+     }
+ 
+     /// Release the reentrancy lock. Must be called before every return
+     /// from a guarded entrypoint, including the success path, so that
+     /// back-to-back calls work.
+     fn exit_nonreentrant(env: &Env) {
+-        env.storage()
+-            .persistent()
+-            .set(&DataKey::ReentrancyLock, &false);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Release the reentrancy lock and panic with `err`. Consolidates the
+     /// exit-then-panic pattern used on every guard-failure path of
+     /// [`Self::compute_route_fee`] so the lock is never leaked on a
+     /// rejection.
+     fn route_abort(env: &Env, err: RouterError) -> ! {
+         Self::exit_nonreentrant(env);

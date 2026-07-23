@@ -1,0 +1,26 @@
+--- src/lib.rs
++++ replace StableRouteRouter::finalize_admin_transfer with ()
+@@ -396,22 +396,17 @@
+         }
+     }
+ 
+     /// Finalise an admin handover: install `new_admin`, clear the pending
+     /// slots, renew the instance TTL, and emit the `executed` event. Shared
+     /// tail of [`Self::accept_admin_transfer`] and
+     /// [`Self::force_admin_transfer`].
+     fn finalize_admin_transfer(env: &Env, new_admin: Address) {
+-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+-        env.storage().instance().remove(&DataKey::PendingAdmin);
+-        env.storage().persistent().remove(&DataKey::PendingAdminEta);
+-        Self::bump_instance_ttl(env);
+-        env.events()
+-            .publish((symbol_short!("executed"),), new_admin);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the per-pair fee in basis points from persistent storage.
+     ///
+     /// Returns `0` (free) when the slot is absent — the documented
+     /// default for an unconfigured, registered pair. This is the single
+     /// source of truth for the [`DataKey::PairFeeBps`] sentinel value.
+     fn read_pair_fee_bps(env: &Env, source: &Symbol, destination: &Symbol) -> u32 {

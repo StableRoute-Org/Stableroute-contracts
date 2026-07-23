@@ -1,0 +1,24 @@
+--- src/lib.rs
++++ replace StableRouteRouter::set_oracle with ()
+@@ -1034,20 +1034,17 @@
+     /// Sets the oracle authorized to participate in liquidity updates.
+     ///
+     /// Only the admin may call this function.
+     ///
+     /// The oracle cannot perform administrative operations.
+     /// The oracle's responsibility is limited to liquidity publication through
+     /// `set_pair_liquidity`.
+     pub fn set_oracle(env: Env, oracle: Address) {
+-        Self::require_admin(&env);
+-        env.storage().persistent().set(&DataKey::Oracle, &oracle);
+-        // Topic shortened to satisfy the 9-char `symbol_short!` limit.
+-        env.events().publish((symbol_short!("orac_set"),), oracle);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Admin revokes the scoped liquidity oracle.
+     ///
+     /// Admin-gated (panics with [`RouterError::NotInitialized`] (#2) when
+     /// no admin is set, like every other admin entrypoint). Removes
+     /// `DataKey::Oracle` so [`Self::set_pair_liquidity`] once again
+     /// accepts **only the admin**: its dual-auth check

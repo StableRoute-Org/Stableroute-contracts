@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace > with < in StableRouteRouter::is_pair_active
+@@ -775,17 +775,17 @@
+     pub fn is_pair_active(env: Env, source: Symbol, destination: Symbol) -> bool {
+         let s = env.storage().persistent();
+         if !s
+             .get::<_, bool>(&DataKey::Pair(source.clone(), destination.clone()))
+             .unwrap_or(false)
+         {
+             return false;
+         }
+-        Self::read_pair_liquidity(&env, &source, &destination) > 0
++        Self::read_pair_liquidity(&env, &source, &destination) < /* ~ changed by cargo-mutants ~ */ 0
+     }
+ 
+     /// Single round-trip aggregate read for the dashboard. Returns
+     /// every per-pair slot in one shot.
+     pub fn get_pair_info(env: Env, source: Symbol, destination: Symbol) -> PairInfo {
+         let s = env.storage().persistent();
+         PairInfo {
+             registered: s

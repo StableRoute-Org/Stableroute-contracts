@@ -1,0 +1,2 @@
+src/lib.rs:418:9: replace StableRouteRouter::read_pair_fee_bps -> u32 with 0
+src/lib.rs:430:9: replace StableRouteRouter::read_pair_min -> i128 with 0

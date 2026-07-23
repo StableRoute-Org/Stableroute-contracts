@@ -1,0 +1,33 @@
+--- src/lib.rs
++++ replace StableRouteRouter::purge_pair_metrics with ()
+@@ -1211,29 +1211,17 @@
+     /// This entrypoint is the explicit, opt-in way to discard that history —
+     /// call it (before or after `unregister_pair` + `register_pair`) when a
+     /// re-listed corridor should start a fresh operational life instead of
+     /// inheriting stale route counts and volume from its previous listing.
+     ///
+     /// Does not touch pair registration (`Pair`) or config (fee/bounds/
+     /// liquidity, see `clear_pair_config`) — only the three metrics slots.
+     pub fn purge_pair_metrics(env: Env, source: Symbol, destination: Symbol) {
+-        Self::require_admin(&env);
+-        let storage = env.storage().persistent();
+-        storage.remove(&DataKey::PairRouteCount(
+-            source.clone(),
+-            destination.clone(),
+-        ));
+-        storage.remove(&DataKey::PairVolume(source.clone(), destination.clone()));
+-        storage.remove(&DataKey::PairLastRouteAt(
+-            source.clone(),
+-            destination.clone(),
+-        ));
+-        env.events()
+-            .publish((symbol_short!("pair_mrst"),), (source, destination));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Returns `true` iff `register_pair` has been called for this pair.
+     pub fn is_pair_registered(env: Env, source: Symbol, destination: Symbol) -> bool {
+         env.storage()
+             .persistent()
+             .get(&DataKey::Pair(source, destination))
+             .unwrap_or(false)
