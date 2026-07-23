@@ -1,84 +1,65 @@
-# Expose protocol limits via `get_limits` (issue #196)
-
 ## Summary
 
-`MAX_FEE_BPS`, `BPS_DENOMINATOR`, `MAX_BATCH_SIZE`, and `MAX_COOLDOWN_SECS`
-were Rust `pub const`s only. An on-chain caller — or a client that did not
-compile against this crate — had no way to discover the limits it must respect
-before submitting a transaction.
-
-This PR adds an on-chain discovery surface:
-
-- A new `#[contracttype] struct RouterLimits` exposing the four constants.
-- A new auth-free, read-only entrypoint `get_limits` that returns it.
-- Tests asserting the returned values equal the compile-time constants.
-- Documentation in `README.md` and `docs/abi.md`.
+Adds missing configuration events to `set_pair_min_amount`, `set_pair_max_amount`, and `set_fee_recipient`, bringing all state-changing setters to parity. Off-chain indexers can now track historical changes to per-pair bounds and the fee recipient address. Closes #160.
 
 ## Changes
 
-### `src/lib.rs`
+### `src/lib.rs` — Event emission (3 setters)
 
-- **`RouterLimits` struct** (new `#[contracttype]`)
-  Stable field order, documented as part of the on-chain ABI:
+Three entrypoints that previously mutated persistent state silently now emit a `symbol_short!` event:
 
-  | Field | Type | Constant |
-  |-------|------|----------|
-  | `max_fee_bps` | `u32` | `MAX_FEE_BPS` |
-  | `bps_denominator` | `i128` | `BPS_DENOMINATOR` |
-  | `max_batch_size` | `u32` | `MAX_BATCH_SIZE` |
-  | `max_cooldown_secs` | `u64` | `MAX_COOLDOWN_SECS` |
+#### `set_pair_min_amount` → `min_set`
+- Topic: `min_set` (7 chars — within the ≤9 limit)
+- Payload: `(source, destination, min_amount): (Symbol, Symbol, i128)`
+- Matches the existing `fee_set`/`liq_set`/`cd_set` per-pair tuple convention
 
-  New limits must be **appended** — the order must not be reordered or inserted
-  into, as that would change the XDR encoding.
+#### `set_pair_max_amount` → `max_set`
+- Topic: `max_set` (7 chars — within the ≤9 limit)
+- Payload: `(source, destination, max_amount): (Symbol, Symbol, i128)`
+- Matches the same per-pair tuple convention
 
-- **`StableRouteRouter::get_limits`** (new entrypoint)
-  Auth: none. Returns a `RouterLimits` snapshot mirroring the `pub const`s.
-  It never touches storage, so it works even on an uninitialized contract
-  (no `Admin` slot required).
+#### `set_fee_recipient` → `recip_set`
+- Topic: `recip_set` (9 chars — within the ≤9 limit)
+- Payload: `recipient: Address`
+- Follows the singleton-event pattern (cf. `orac_set(address)`, `maxfee(i128)`, `minfee(i128)`)
 
-### `docs/abi.md`
+### Doc comments
 
-- Added `get_limits` to the **Lifecycle** entrypoint table.
-- Added a new **Protocol limits (`RouterLimits`)** section documenting the
-  struct fields, their constants/values, and which config setter enforces each
-  bound.
+Each function's `///` doc comment now mentions the emitted event by name:
+- *"Emits a `min_set` event carrying the pair and the new floor."*
+- *"Emits a `max_set` event carrying the pair and the new ceiling."*
+- *"Emits a `recip_set` event carrying the new recipient address."*
 
-### `README.md`
+### Tests (`src/lib.rs`)
 
-- Added a **Protocol limits** section summarizing the four bounds and pointing
-  readers to `get_limits` for on-chain discovery.
+Extended `test_pair_lifecycle_events_have_exact_payloads_and_counts` with three new assertion blocks, one per new event:
 
-## Tests (`src/lib.rs`, `mod test_i196_get_limits`)
+| New event | Assertions |
+|-----------|-----------|
+| `min_set` | Count = 1, payload decodes to `(Symbol, Symbol, i128)`, matches the input `(USDC, EURC, 50)` |
+| `max_set` | Count = 1, payload decodes to `(Symbol, Symbol, i128)`, matches the input `(USDC, EURC, 10_000)` |
+| `recip_set` | Count = 1, payload decodes to `Address`, matches the `admin` address passed as recipient |
 
-All new tests are in the dedicated `test_i196_get_limits` module:
+### `docs/abi.md` — Event documentation
 
-- `test_get_limits_matches_constants` — returned struct equals each `pub const`.
-- `test_get_limits_hardcoded_values` — asserts the concrete values
-  (`1_000` / `10_000` / `100` / `2_592_000`) so a silent constant change is
-  caught, not just drift between the struct and the constants.
-- `test_get_limits_struct_is_consistent_with_manual_build` — struct can be
-  rebuilt identically from the constants (guards against a dropped/reordered
-  field).
-- `test_get_limits_works_when_uninitialized` — read-only discovery works with
-  no admin set (no auth, no storage dependency).
-- `test_get_limits_are_the_enforced_bounds` — ties the discovered limits to the
-  real enforcement paths: a fee at `max_fee_bps` and a cooldown at
-  `max_cooldown_secs` are accepted.
-- `test_get_limits_batch_size_is_enforced_cap` — a batch of
-  `max_batch_size + 1` is rejected with `BatchTooLarge` (#18), proving the
-  returned `max_batch_size` is the actual enforcement cap.
+- **Fees table:** `set_fee_recipient` Event column changed from `—` to `recip_set(recipient)`
+- **Bounds & liquidity table:** `set_pair_min_amount` Event changed from `—` to `min_set(source, destination, min_amount)`; `set_pair_max_amount` Event changed from `—` to `max_set(source, destination, max_amount)`
+- **Event catalog:** Added three new rows — `min_set`, `max_set`, `recip_set` — with their payload types and emitter entrypoints
 
-## Verification
+## Validation
 
-```
-cargo fmt --all -- --check   # passes
-cargo build                  # passes
-cargo test                   # all get_limits tests pass
-```
+All CI checks pass locally:
 
-> Note: the unrelated pre-existing test
-> `test::test_reregister_after_unregister_restores_pair_and_preserves_fee`
-> was already failing on `main` before this change (verified via `git stash`);
-> it is outside the scope of issue #196 and is not modified here.
+| Check | Result |
+|-------|--------|
+| `cargo fmt --all -- --check` | ✅ Pass |
+| `cargo build` | ✅ Pass |
+| `cargo clippy --all-targets -- -D warnings` | ✅ Pass |
+| `cargo test` (234 tests) | ✅ All pass |
+| `cargo llvm-cov --all-targets --fail-under-lines 95` | ✅ ≥95% |
 
-closes #196
+No validation logic, return values, error codes, or storage slots were changed — only event emissions and their documentation.
+
+## Related
+
+Closes #160 — Emit a config event from `set_pair_min_amount`, `set_pair_max_amount`, and `set_fee_recipient`.

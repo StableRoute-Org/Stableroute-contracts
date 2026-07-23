@@ -935,11 +935,14 @@ impl StableRouteRouter {
 
     /// Admin sets the address that receives protocol fees at
     /// settlement time. The router itself never custodies funds.
+    /// Emits a `recip_set` event carrying the new recipient address.
     pub fn set_fee_recipient(env: Env, recipient: Address) {
         Self::require_admin(&env);
         env.storage()
             .persistent()
             .set(&DataKey::FeeRecipient, &recipient);
+        env.events()
+            .publish((symbol_short!("recip_set"),), recipient);
     }
 
     /// Read the configured fee recipient, if any.
@@ -1138,15 +1141,21 @@ impl StableRouteRouter {
     /// [`Self::register_pair`]; rejects an unregistered pair with
     /// [`RouterError::PairNotRegistered`] (#5) so the maximum can never be
     /// configured for a corridor that was never (or no longer) enabled.
+    /// Emits a `max_set` event carrying the pair and the new ceiling.
     pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
         Self::require_admin(&env);
         if max_amount <= 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
         Self::require_pair_registered(&env, &source, &destination);
-        env.storage()
-            .persistent()
-            .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
+        env.storage().persistent().set(
+            &DataKey::PairMaxAmount(source.clone(), destination.clone()),
+            &max_amount,
+        );
+        env.events().publish(
+            (symbol_short!("max_set"),),
+            (source, destination, max_amount),
+        );
     }
 
     /// Read the per-pair minimum (0 when absent).
@@ -1160,15 +1169,21 @@ impl StableRouteRouter {
     /// [`Self::register_pair`]; rejects an unregistered pair with
     /// [`RouterError::PairNotRegistered`] (#5) so the minimum can never be
     /// configured for a corridor that was never (or no longer) enabled.
+    /// Emits a `min_set` event carrying the pair and the new floor.
     pub fn set_pair_min_amount(env: Env, source: Symbol, destination: Symbol, min_amount: i128) {
         Self::require_admin(&env);
         if min_amount < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
         Self::require_pair_registered(&env, &source, &destination);
-        env.storage()
-            .persistent()
-            .set(&DataKey::PairMinAmount(source, destination), &min_amount);
+        env.storage().persistent().set(
+            &DataKey::PairMinAmount(source.clone(), destination.clone()),
+            &min_amount,
+        );
+        env.events().publish(
+            (symbol_short!("min_set"),),
+            (source, destination, min_amount),
+        );
     }
 
     /// Clear all pair-scoped config that should not survive unregister + re-register.
@@ -2358,6 +2373,42 @@ mod test {
             soroban_sdk::TryFromVal::try_from_val(&env, &liq_set_payloads[0])
                 .expect("liq_set event data decodes to pair and liquidity");
         assert_eq!(liq_set, (src.clone(), dest.clone(), 1_000i128));
+
+        client.set_pair_min_amount(&src, &dest, &50i128);
+        let min_set_payloads = event_payloads(&env, symbol_short!("min_set"));
+        assert_eq!(
+            min_set_payloads.len(),
+            1,
+            "set_pair_min_amount emits one min_set event"
+        );
+        let min_set: (Symbol, Symbol, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &min_set_payloads[0])
+                .expect("min_set event data decodes to pair and amount");
+        assert_eq!(min_set, (src.clone(), dest.clone(), 50i128));
+
+        client.set_pair_max_amount(&src, &dest, &10_000i128);
+        let max_set_payloads = event_payloads(&env, symbol_short!("max_set"));
+        assert_eq!(
+            max_set_payloads.len(),
+            1,
+            "set_pair_max_amount emits one max_set event"
+        );
+        let max_set: (Symbol, Symbol, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &max_set_payloads[0])
+                .expect("max_set event data decodes to pair and amount");
+        assert_eq!(max_set, (src.clone(), dest.clone(), 10_000i128));
+
+        client.set_fee_recipient(&admin);
+        let recip_set_payloads = event_payloads(&env, symbol_short!("recip_set"));
+        assert_eq!(
+            recip_set_payloads.len(),
+            1,
+            "set_fee_recipient emits one recip_set event"
+        );
+        let recip_set: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &recip_set_payloads[0])
+                .expect("recip_set event data decodes to address");
+        assert_eq!(recip_set, admin);
 
         client.unregister_pair(&src, &dest);
         let unreg_payloads = event_payloads(&env, symbol_short!("unreg"));
