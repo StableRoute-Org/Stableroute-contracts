@@ -82,8 +82,12 @@ pub struct RouterLimits {
     pub max_cooldown_secs: u64,
 }
 
-/// Storage keys used by the StableRoute router. All twenty variants live
-/// in persistent storage — no instance or temporary storage is used today.
+/// Storage keys used by the StableRoute router. Twenty-one variants total.
+/// Most live in persistent storage; three hot-global singletons
+/// ([`Admin`](DataKey::Admin), [`PendingAdmin`](DataKey::PendingAdmin),
+/// [`Paused`](DataKey::Paused)) live in **instance** storage so they are
+/// read together with the contract instance on every admin-gated or
+/// pause-gated call, avoiding a separate persistent-storage hit.
 ///
 /// See [`docs/storage.md`] for the authoritative reference: key shape,
 /// value type, default-when-absent, reader/writer entrypoints, and TTL
@@ -97,7 +101,7 @@ pub struct RouterLimits {
 /// - `0`              → default for counters, fees, timestamps (as `u64`),
 ///   `PairMinAmount`, and cooldowns.
 /// - Absent `Option`  → `None` (admin, pending admin, fee recipient,
-///   last-route timestamp, max fee absolute, oracle).
+///   last-route timestamp, max fee absolute, min fee absolute, oracle).
 /// - `SchemaVersion`  → `1` when absent (the implicit pre-migration default).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,8 +125,20 @@ pub enum DataKey {
     /// handover queued).
     PendingAdmin,
     /// `true` when the router is paused (singleton, `bool`, **instance**
-    /// — hot global). All state-changing entrypoints reject calls until
-    /// an unpause. Defaults to `false` (not paused).
+    /// — hot global). Route-accounting (`compute_route_fee`), pair
+    /// registration (`register_pair`, `register_pairs`), and fee setters
+    /// (`set_pair_fee_bps`, `set_pair_fees_bps`) reject calls while
+    /// paused. Admin/config setters (`set_pair_liquidity`,
+    /// `set_pair_cooldown`, `set_pair_min_amount`, `set_pair_max_amount`,
+    /// `set_fee_recipient`, `set_max_fee_absolute`,
+    /// `set_min_fee_absolute`, `set_oracle`, `remove_oracle`), lifecycle
+    /// entrypoints (`unregister_pair`, `purge_pair_metrics`), governance
+    /// (`pause`, `unpause`, `set_timelock`, `propose_admin_transfer`,
+    /// `cancel_admin_transfer`, `force_admin_transfer`,
+    /// `accept_admin_transfer`), migration (`migrate_v1_to_v2`), and
+    /// read-only queries (`quote_route`, getters, `version`) remain
+    /// available so the admin can recover and integrators can keep
+    /// planning routes. Defaults to `false` (not paused).
     Paused,
     /// Minimum routable amount per pair in source units (keyed per-pair,
     /// `i128`, persistent). `compute_route_fee` rejects amounts below the
