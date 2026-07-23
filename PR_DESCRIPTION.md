@@ -1,84 +1,59 @@
-# Expose protocol limits via `get_limits` (issue #196)
-
 ## Summary
 
-`MAX_FEE_BPS`, `BPS_DENOMINATOR`, `MAX_BATCH_SIZE`, and `MAX_COOLDOWN_SECS`
-were Rust `pub const`s only. An on-chain caller — or a client that did not
-compile against this crate — had no way to discover the limits it must respect
-before submitting a transaction.
-
-This PR adds an on-chain discovery surface:
-
-- A new `#[contracttype] struct RouterLimits` exposing the four constants.
-- A new auth-free, read-only entrypoint `get_limits` that returns it.
-- Tests asserting the returned values equal the compile-time constants.
-- Documentation in `README.md` and `docs/abi.md`.
+Fixes documentation drift in `src/lib.rs` where `DataKey` doc comments no longer reflected the actual contract implementation. Closes #159.
 
 ## Changes
 
-### `src/lib.rs`
+### `src/lib.rs` — `DataKey` enum documentation
 
-- **`RouterLimits` struct** (new `#[contracttype]`)
-  Stable field order, documented as part of the on-chain ABI:
+Three categories of doc-comment correction, all **comment-only** (no logic, events, or errors changed):
 
-  | Field | Type | Constant |
-  |-------|------|----------|
-  | `max_fee_bps` | `u32` | `MAX_FEE_BPS` |
-  | `bps_denominator` | `i128` | `BPS_DENOMINATOR` |
-  | `max_batch_size` | `u32` | `MAX_BATCH_SIZE` |
-  | `max_cooldown_secs` | `u64` | `MAX_COOLDOWN_SECS` |
+#### 1. Enum-level doc block (lines 84–99)
 
-  New limits must be **appended** — the order must not be reordered or inserted
-  into, as that would change the XDR encoding.
+The enum-level `///` comment previously claimed "no instance storage variants (none yet)". Updated to accurately describe the current layout:
 
-- **`StableRouteRouter::get_limits`** (new entrypoint)
-  Auth: none. Returns a `RouterLimits` snapshot mirroring the `pub const`s.
-  It never touches storage, so it works even on an uninitialized contract
-  (no `Admin` slot required).
+- **Twenty-one variants** total (was stale at an older count).
+- **Three hot-global singletons** now live in **instance storage**: `Admin`, `PendingAdmin`, `Paused`. Bundling them with the contract instance avoids a separate persistent-storage read on every admin-gated or pause-gated call.
+- Sentinel conventions now list `min fee absolute` alongside the existing `max fee absolute`.
 
-### `docs/abi.md`
+#### 2. `DataKey::Admin` (line 117)
 
-- Added `get_limits` to the **Lifecycle** entrypoint table.
-- Added a new **Protocol limits (`RouterLimits`)** section documenting the
-  struct fields, their constants/values, and which config setter enforces each
-  bound.
+Was documented as "set once at init". Updated to:
 
-### `README.md`
+> Set once by `__constructor`; only changed by a two-step handover (`propose_admin_transfer` → `accept_admin_transfer`).
 
-- Added a **Protocol limits** section summarizing the four bounds and pointing
-  readers to `get_limits` for on-chain discovery.
+This reflects the migration from a standalone `init()` entrypoint (which now unconditionally panics with `AlreadyInitialized`) to the Soroban constructor pattern (`__constructor`), which atomically sets the admin at deploy time and closes the init front-running window.
 
-## Tests (`src/lib.rs`, `mod test_i196_get_limits`)
+#### 3. `DataKey::Paused` (lines 127–141)
 
-All new tests are in the dedicated `test_i196_get_limits` module:
+The comment previously claimed that "No write entrypoint accepts calls until an unpause," which was inaccurate — numerous admin/config entrypoints intentionally remain available so the admin can recover during a pause.
 
-- `test_get_limits_matches_constants` — returned struct equals each `pub const`.
-- `test_get_limits_hardcoded_values` — asserts the concrete values
-  (`1_000` / `10_000` / `100` / `2_592_000`) so a silent constant change is
-  caught, not just drift between the struct and the constants.
-- `test_get_limits_struct_is_consistent_with_manual_build` — struct can be
-  rebuilt identically from the constants (guards against a dropped/reordered
-  field).
-- `test_get_limits_works_when_uninitialized` — read-only discovery works with
-  no admin set (no auth, no storage dependency).
-- `test_get_limits_are_the_enforced_bounds` — ties the discovered limits to the
-  real enforcement paths: a fee at `max_fee_bps` and a cooldown at
-  `max_cooldown_secs` are accepted.
-- `test_get_limits_batch_size_is_enforced_cap` — a batch of
-  `max_batch_size + 1` is rejected with `BatchTooLarge` (#18), proving the
-  returned `max_batch_size` is the actual enforcement cap.
+Updated to enumerate the exact pause-gating boundaries:
 
-## Verification
+- **Rejected while paused** (call `require_not_paused`): `compute_route_fee`, `register_pair`, `register_pairs`, `set_pair_fee_bps`, `set_pair_fees_bps`.
+- **Available while paused** (no pause check): all admin/config setters (`set_pair_liquidity`, `set_pair_cooldown`, `set_pair_min_amount`, `set_pair_max_amount`, `set_fee_recipient`, `set_max_fee_absolute`, `set_min_fee_absolute`, `set_oracle`, `remove_oracle`), lifecycle entrypoints (`unregister_pair`, `purge_pair_metrics`), governance (`pause`, `unpause`, `set_timelock`, `propose_admin_transfer`, `cancel_admin_transfer`, `force_admin_transfer`, `accept_admin_transfer`), migration (`migrate_v1_to_v2`), and read-only queries (`quote_route`, getters, `version`).
 
-```
-cargo fmt --all -- --check   # passes
-cargo build                  # passes
-cargo test                   # all get_limits tests pass
-```
+### `docs/storage.md` — Storage tier documentation
 
-> Note: the unrelated pre-existing test
-> `test::test_reregister_after_unregister_restores_pair_and_preserves_fee`
-> was already failing on `main` before this change (verified via `git stash`);
-> it is outside the scope of issue #196 and is not modified here.
+The storage reference now correctly documents the two-tier layout:
 
-closes #196
+- **Instance storage**: `Admin`, `PendingAdmin`, `Paused` — hot globals read on every admin/pause call.
+- **Persistent storage**: every other `DataKey` slot.
+
+Added the `MinFeeAbsolute` row to the DataKey table, and updated `Admin`, `PendingAdmin`, and `Paused` tier columns from "persistent" to "**instance**".
+
+## Validation
+
+All existing tests pass, confirming no behavioural changes:
+
+- ✅ `cargo fmt --all -- --check` — no formatting drift
+- ✅ `cargo build` — compiles cleanly
+- ✅ `cargo clippy --all-targets -- -D warnings` — no new lints
+- ✅ `cargo test` — all tests green
+- ✅ `cargo build --target wasm32v1-none --release` — deployable WASM artifact
+- ✅ `bash scripts/check_wasm_size.sh` — within size budget
+- ✅ `cargo llvm-cov --all-targets --fail-under-lines 95` — ≥95% line coverage
+
+## Related
+
+Closes #159 — Replace the constructor-only init path: documentation drift in the `DataKey` and `Paused` comments.

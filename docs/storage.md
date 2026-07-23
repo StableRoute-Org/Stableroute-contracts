@@ -15,18 +15,24 @@ read/write it, and its TTL class. Defaults are cross-checked against the
 - **`0`** is the default for counters, fees, timestamps (as `u64`),
   `PairMinAmount`, and cooldowns.
 - An **absent `Option`** stays `None` (admin, pending admin, fee recipient,
-  last-route timestamp, max fee absolute, oracle) — distinct from a zero
+  last-route timestamp, max fee absolute, min fee absolute, oracle) — distinct from a zero
   value.
 - `SchemaVersion` defaults to **`1`** when absent (the implicit pre-migration
   default).
 
-## Storage tier
+## Storage tiers
 
-All twenty `DataKey` slots live in **persistent** storage; the contract uses
-no instance or temporary storage today. Persistent entries are subject to
-state archival once their TTL lapses: a pair configured long ago but not
-routed recently can have its entries archived and must be restored (bumped)
-before use.
+Contract state lives in two Soroban storage tiers:
+
+- **Instance storage** — `Admin`, `PendingAdmin`, and `Paused`. These are the
+  hot globals: every admin-gated entrypoint reads `Admin`, and every
+  pause-gated entrypoint reads `Paused` before doing anything else. Bundling
+  them with the contract instance avoids a separate persistent-storage read
+  (and its own TTL check) on every call.
+- **Persistent storage** — every other `DataKey` slot. Persistent entries are
+  subject to state archival once their TTL lapses: a pair configured long ago
+  but not routed recently can have its entries archived and must be restored
+  (bumped) before use.
 
 ### TTL classes
 
@@ -49,13 +55,14 @@ persistent keys is the reference mitigation.
 
 | DataKey | Value type | Tier | TTL class | Default when absent | Read by | Written by |
 |---|---|---|---|---|---|---|
-| `Admin` | `Address` | persistent | **Static** | `None` → `NotInitialized` (#2) | `get_admin`, `require_admin` | `__constructor`, `accept_admin_transfer`, `force_admin_transfer` |
-| `PendingAdmin` | `Address` | persistent | **Config** | `None` | `get_pending_admin`, `get_pending_admin_info`, `accept_admin_transfer`, `force_admin_transfer` | `propose_admin_transfer`; removed by `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
+| `Admin` | `Address` | **instance** | **Static** | `None` → `NotInitialized` (#2) | `get_admin`, `require_admin` | `__constructor`, `accept_admin_transfer`, `force_admin_transfer` |
+| `PendingAdmin` | `Address` | **instance** | **Config** | `None` | `get_pending_admin`, `get_pending_admin_info`, `accept_admin_transfer`, `force_admin_transfer` | `propose_admin_transfer`; removed by `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
 | `PendingAdminEta` | `u64` | persistent | **Config** | `None` | `get_pending_admin_eta`, `get_pending_admin_info`, `accept_admin_transfer`, `force_admin_transfer` | `propose_admin_transfer`; removed by `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
 | `Timelock` | `u64` | persistent | **Config** | `0` (instant handover) | `get_timelock`, `propose_admin_transfer` | `set_timelock` |
-| `Paused` | `bool` | persistent | **Config** | `false` | `is_paused`, `register_pair`, `register_pairs`, `set_pair_fee_bps`, `set_pair_fees_bps`, `compute_route_fee` | `pause`, `unpause` |
+| `Paused` | `bool` | **instance** | **Config** | `false` | `is_paused`, `register_pair`, `register_pairs`, `set_pair_fee_bps`, `set_pair_fees_bps`, `compute_route_fee` | `pause`, `unpause` |
 | `FeeRecipient` | `Address` | persistent | **Config** | `None` | `get_fee_recipient` | `set_fee_recipient` |
 | `MaxFeeAbsolute` | `i128` | persistent | **Config** | `None` | `get_max_fee_absolute`, `apply_fee_cap` (in `compute_route_fee` and `quote_route`) | `set_max_fee_absolute` |
+| `MinFeeAbsolute` | `i128` | persistent | **Config** | `None` | `get_min_fee_absolute`, `apply_fee_floor` (in `compute_route_fee` and `quote_route`) | `set_min_fee_absolute` |
 | `Oracle` | `Address` | persistent | **Config** | `None` | `get_oracle`, `set_pair_liquidity` (dual-auth check) | `set_oracle`; removed by `remove_oracle` |
 | `TotalRoutesAllTime` | `u64` | persistent | **Hot** | `0` | `get_total_routes_all_time` | `compute_route_fee` (saturating `+1`) |
 | `SchemaVersion` | `u32` | persistent | **Static** | `1` (implicit v1) | `get_schema_version` | `migrate_v1_to_v2` |
