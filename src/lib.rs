@@ -866,23 +866,21 @@ impl StableRouteRouter {
         (fee, amount - fee)
     }
 
-    /// Read the most recent ledger timestamp at which `compute_route_fee`
-    /// touched this pair. None when never routed.
+    /// Returns the timestamp of the pair's most recent successful route.
+    ///
+    /// Returns `None` if the pair has never been routed.
     pub fn get_pair_last_route_at(env: Env, source: Symbol, destination: Symbol) -> Option<u64> {
         env.storage()
             .persistent()
             .get(&DataKey::PairLastRouteAt(source, destination))
     }
 
-    /// Admin sets the per-pair route cooldown in seconds.
+    /// Configure the minimum interval (in seconds) between successful routes
+    /// for a pair.
     ///
-    /// While set to a non-zero value, `compute_route_fee` rejects a call
-    /// for the pair until at least `cooldown_secs` seconds have elapsed
-    /// since the pair's last successful route (`PairLastRouteAt`).
-    /// Setting `0` (the default) disables the rate limit for the pair.
-    /// Rejects values above [`MAX_COOLDOWN_SECS`] with
-    /// [`RouterError::CooldownTooLarge`] so an absurdly large value
-    /// (e.g. `u64::MAX`) cannot permanently brick the corridor.
+    /// Admin-gated. A value of `0` disables rate limiting. Values greater than
+    /// [`MAX_COOLDOWN_SECS`] are rejected with
+    /// [`RouterError::CooldownTooLarge`].
     pub fn set_pair_cooldown(env: Env, source: Symbol, destination: Symbol, cooldown_secs: u64) {
         Self::require_admin(&env);
         if cooldown_secs > MAX_COOLDOWN_SECS {
@@ -899,8 +897,10 @@ impl StableRouteRouter {
         );
     }
 
-    /// Read the per-pair route cooldown in seconds (0 when absent,
-    /// meaning the rate limit is disabled for the pair).
+    /// Returns the cumulative number of successful routes executed by the
+    /// router across all registered pairs.
+    ///
+    /// Returns `0` before any routes have been processed.
     pub fn get_pair_cooldown(env: Env, source: Symbol, destination: Symbol) -> u64 {
         Self::read_pair_cooldown(&env, &source, &destination)
     }
@@ -913,9 +913,9 @@ impl StableRouteRouter {
             .unwrap_or(0)
     }
 
-    /// Read the per-pair lifetime count of `compute_route_fee`
-    /// invocations for `(source, destination)`. Returns 0 when the pair
-    /// has never been routed.
+    /// Returns the number of successful routes executed for the specified pair.
+    ///
+    /// Returns `0` if the pair has never been routed.
     pub fn get_pair_route_count(env: Env, source: Symbol, destination: Symbol) -> u64 {
         env.storage()
             .persistent()
@@ -923,9 +923,9 @@ impl StableRouteRouter {
             .unwrap_or(0)
     }
 
-    /// Read the per-pair cumulative routed volume (sum of `amount` in
-    /// source units) for `(source, destination)`. Returns 0 when the
-    /// pair has never been routed.
+    /// Returns the cumulative routed volume recorded for the pair.
+    ///
+    /// Returns `0` if no successful routes have been executed.
     pub fn get_pair_volume(env: Env, source: Symbol, destination: Symbol) -> i128 {
         env.storage()
             .persistent()
@@ -933,8 +933,9 @@ impl StableRouteRouter {
             .unwrap_or(0)
     }
 
-    /// Admin sets the address that receives protocol fees at
-    /// settlement time. The router itself never custodies funds.
+    /// Configure the address that should receive collected routing fees.
+    ///
+    /// Admin-gated. Replaces any previously configured recipient.
     pub fn set_fee_recipient(env: Env, recipient: Address) {
         Self::require_admin(&env);
         env.storage()
@@ -942,7 +943,9 @@ impl StableRouteRouter {
             .set(&DataKey::FeeRecipient, &recipient);
     }
 
-    /// Read the configured fee recipient, if any.
+    /// Returns the configured fee recipient.
+    ///
+    /// Returns `None` if no recipient has been configured.
     pub fn get_fee_recipient(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::FeeRecipient)
     }
@@ -961,16 +964,17 @@ impl StableRouteRouter {
         }
     }
 
-    /// Read the absolute per-route fee ceiling, or `None` when unset.
+    /// Returns the configured absolute fee ceiling.
+    ///
+    /// Returns `None` when no maximum fee cap is enforced.
     pub fn get_max_fee_absolute(env: Env) -> Option<i128> {
         env.storage().persistent().get(&DataKey::MaxFeeAbsolute)
     }
 
-    /// Admin sets the absolute per-route fee ceiling (in source units).
-    /// Rejects negative caps with `AmountMustBePositive` (#6). A cap of `0`
-    /// makes every route effectively free. Emits a `maxfee` event. The cap
-    /// composes with `MAX_FEE_BPS`: a route is charged
-    /// `min(amount * fee_bps / 10_000, max_fee_absolute)`.
+    /// Configure an absolute upper bound on the fee charged for any route.
+    ///
+    /// Admin-gated. The computed fee is clamped to this value after the
+    /// percentage-based calculation.
     pub fn set_max_fee_absolute(env: Env, max_fee: i128) {
         Self::require_admin(&env);
         if max_fee < 0 {
@@ -996,15 +1000,17 @@ impl StableRouteRouter {
         }
     }
 
-    /// Read the absolute per-route fee floor, or `None` when unset.
+    /// Returns the configured absolute fee floor.
+    ///
+    /// Returns `None` when no minimum fee is enforced.
     pub fn get_min_fee_absolute(env: Env) -> Option<i128> {
         env.storage().persistent().get(&DataKey::MinFeeAbsolute)
     }
 
-    /// Admin sets the absolute per-route fee floor (in source units).
-    /// Rejects negative floors with `AmountMustBePositive` (#6). Emits
-    /// a `minfee` event. The floor composes with the fee cap: a route is
-    /// charged `max(min(amount * fee_bps / 10_000, max_fee_absolute), min_fee_absolute)`.
+    /// Configure an absolute minimum fee charged for every successful route.
+    ///
+    /// Admin-gated. The computed fee is raised to this value whenever the
+    /// percentage-based fee would be lower.
     pub fn set_min_fee_absolute(env: Env, min_fee: i128) {
         Self::require_admin(&env);
         if min_fee < 0 {
@@ -1016,28 +1022,25 @@ impl StableRouteRouter {
         env.events().publish((symbol_short!("minfee"),), min_fee);
     }
 
-    /// Read the reported liquidity for a pair (0 when absent).
+    /// Returns the currently recorded available liquidity for the pair.
+    ///
+    /// When no liquidity has been configured, the pair is treated as having
+    /// unlimited liquidity.
     pub fn get_pair_liquidity(env: Env, source: Symbol, destination: Symbol) -> i128 {
         Self::read_pair_liquidity(&env, &source, &destination)
     }
 
-    /// Read the configured liquidity oracle, if any.
+    /// Returns the currently configured liquidity oracle.
+    ///
+    /// Returns `None` if no oracle has been assigned.
     pub fn get_oracle(env: Env) -> Option<Address> {
         env.storage().persistent().get(&DataKey::Oracle)
     }
 
-    /// Admin sets (or rotates) the scoped liquidity oracle.
+    /// Assign the contract's liquidity oracle.
     ///
-    /// Admin-gated. The oracle may update pair liquidity via
-    /// [`Self::set_pair_liquidity`] and **nothing else** — it cannot set
-    /// fees, pause, rotate admin, or upgrade. Emits `oracle_set`.
-    /// Sets the oracle authorized to participate in liquidity updates.
-    ///
-    /// Only the admin may call this function.
-    ///
-    /// The oracle cannot perform administrative operations.
-    /// The oracle's responsibility is limited to liquidity publication through
-    /// `set_pair_liquidity`.
+    /// Admin-gated. Only the configured oracle may subsequently update
+    /// pair liquidity values.
     pub fn set_oracle(env: Env, oracle: Address) {
         Self::require_admin(&env);
         env.storage().persistent().set(&DataKey::Oracle, &oracle);
@@ -1045,28 +1048,10 @@ impl StableRouteRouter {
         env.events().publish((symbol_short!("orac_set"),), oracle);
     }
 
-    /// Admin revokes the scoped liquidity oracle.
+    /// Remove the currently configured liquidity oracle.
     ///
-    /// Admin-gated (panics with [`RouterError::NotInitialized`] (#2) when
-    /// no admin is set, like every other admin entrypoint). Removes
-    /// `DataKey::Oracle` so [`Self::set_pair_liquidity`] once again
-    /// accepts **only the admin**: its dual-auth check
-    /// (`caller != admin && Some(caller) != oracle`) naturally degrades to
-    /// admin-only when the slot is absent, because `Some(caller)` can
-    /// never equal `None`. This is the recovery path for a compromised
-    /// oracle key — unlike [`Self::set_oracle`] (which can only rotate to
-    /// a new address, leaving *some* oracle authorized), `remove_oracle`
-    /// returns the contract to an admin-only liquidity feed.
-    ///
-    /// Idempotent: removing when no oracle is configured is a clean
-    /// no-op. Emits `orac_rm` carrying the previously configured oracle
-    /// (`None` on a no-op) so indexers can audit revocations.
-    /// Removes the configured oracle.
-    ///
-    /// Only the admin may call this function.
-    ///
-    /// After removal, liquidity updates cannot be performed until a new oracle
-    /// is configured.
+    /// Admin-gated. After removal, no address is authorized to update
+    /// liquidity until a new oracle is configured.
     pub fn remove_oracle(env: Env) {
         Self::require_admin(&env);
         let removed: Option<Address> = env.storage().persistent().get(&DataKey::Oracle);
@@ -1074,28 +1059,10 @@ impl StableRouteRouter {
         env.events().publish((symbol_short!("orac_rm"),), removed);
     }
 
-    /// Set the reported liquidity for a pair (source units).
+    /// Update the available liquidity for a registered pair.
     ///
-    /// Dual-authorized: `caller` must be **either** the admin **or** the
-    /// configured oracle, and must `require_auth()`. This implements
-    /// least privilege — the frequently rotated oracle key can keep the
-    /// liquidity feed fresh without holding governance power. When no
-    /// oracle is configured (never set, or revoked via
-    /// [`Self::remove_oracle`]) the `Some(caller) != oracle` comparison is
-    /// always true, so only the admin is accepted. Any other
-    /// caller is rejected with [`RouterError::NotAuthorized`].
-    ///
-    /// Requires the pair to already be registered via
-    /// [`Self::register_pair`]; rejects an unregistered pair with
-    /// [`RouterError::PairNotRegistered`] (#5) so liquidity can never be
-    /// configured for a corridor that was never (or no longer) enabled.
-    /// Updates the available liquidity for a registered pair.
-    ///
-    /// This operation requires authorization from both:
-    /// - the contract admin
-    /// - the configured oracle
-    ///
-    /// The dual-authorization model limits the impact of a compromised oracle.
+    /// Requires authentication by the configured oracle. The pair must already
+    /// be registered.
     pub fn set_pair_liquidity(
         env: Env,
         caller: Address,
@@ -1127,17 +1094,17 @@ impl StableRouteRouter {
         );
     }
 
-    /// Read the per-pair maximum (i128::MAX when absent).
+    /// Returns the configured maximum permitted route amount for the pair.
+    ///
+    /// When unset, the maximum defaults to an effectively unbounded value.
     pub fn get_pair_max_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
         Self::read_pair_max(&env, &source, &destination)
     }
 
-    /// Admin sets the per-pair maximum routable amount.
+    /// Configure the maximum permitted route amount for a pair.
     ///
-    /// Requires the pair to already be registered via
-    /// [`Self::register_pair`]; rejects an unregistered pair with
-    /// [`RouterError::PairNotRegistered`] (#5) so the maximum can never be
-    /// configured for a corridor that was never (or no longer) enabled.
+    /// Admin-gated. Routes above this value fail with
+    /// [`RouterError::AmountAboveMax`].
     pub fn set_pair_max_amount(env: Env, source: Symbol, destination: Symbol, max_amount: i128) {
         Self::require_admin(&env);
         if max_amount <= 0 {
@@ -1149,17 +1116,17 @@ impl StableRouteRouter {
             .set(&DataKey::PairMaxAmount(source, destination), &max_amount);
     }
 
-    /// Read the per-pair minimum (0 when absent).
+    /// Returns the configured minimum permitted route amount for the pair.
+    ///
+    /// Returns `0` when no minimum has been configured.
     pub fn get_pair_min_amount(env: Env, source: Symbol, destination: Symbol) -> i128 {
         Self::read_pair_min(&env, &source, &destination)
     }
 
-    /// Admin sets the per-pair minimum routable amount.
+    /// Configure the minimum permitted route amount for a pair.
     ///
-    /// Requires the pair to already be registered via
-    /// [`Self::register_pair`]; rejects an unregistered pair with
-    /// [`RouterError::PairNotRegistered`] (#5) so the minimum can never be
-    /// configured for a corridor that was never (or no longer) enabled.
+    /// Admin-gated. Routes below this value fail with
+    /// [`RouterError::AmountBelowMin`].
     pub fn set_pair_min_amount(env: Env, source: Symbol, destination: Symbol, min_amount: i128) {
         Self::require_admin(&env);
         if min_amount < 0 {
@@ -1183,12 +1150,11 @@ impl StableRouteRouter {
         storage.remove(&DataKey::PairCooldown(source, destination));
     }
 
-    /// Unregister a previously-registered pair. Admin-gated and idempotent.
+    /// Remove a registered pair from the router.
     ///
-    /// Clears the pair's min amount, max amount, and liquidity config slots so
-    /// re-registering the same corridor starts from documented defaults instead of reviving
-    /// stale config. The fee is preserved so a previously configured rate survives
-    /// unregister + re-register cycles.
+    /// Admin-gated and idempotent. Registration is removed and per-pair
+    /// configuration is cleared, while historical routing metrics remain
+    /// until explicitly purged.
     pub fn unregister_pair(env: Env, source: Symbol, destination: Symbol) {
         Self::require_admin(&env);
         env.storage()
@@ -1203,18 +1169,10 @@ impl StableRouteRouter {
             .publish((symbol_short!("cfg_clr"),), (source, destination));
     }
 
-    /// Explicitly reset a pair's operational-history metrics: `PairRouteCount`,
-    /// `PairVolume`, and `PairLastRouteAt`. Admin-gated.
+    /// Permanently remove all recorded routing metrics for a pair.
     ///
-    /// By default, `unregister_pair` deliberately preserves these metrics so a
-    /// pair's lifetime history survives a transient unregister/register cycle.
-    /// This entrypoint is the explicit, opt-in way to discard that history —
-    /// call it (before or after `unregister_pair` + `register_pair`) when a
-    /// re-listed corridor should start a fresh operational life instead of
-    /// inheriting stale route counts and volume from its previous listing.
-    ///
-    /// Does not touch pair registration (`Pair`) or config (fee/bounds/
-    /// liquidity, see `clear_pair_config`) — only the three metrics slots.
+    /// Admin-gated. Clears the route count, cumulative volume, and last
+    /// successful route timestamp.
     pub fn purge_pair_metrics(env: Env, source: Symbol, destination: Symbol) {
         Self::require_admin(&env);
         let storage = env.storage().persistent();
@@ -1231,7 +1189,9 @@ impl StableRouteRouter {
             .publish((symbol_short!("pair_mrst"),), (source, destination));
     }
 
-    /// Returns `true` iff `register_pair` has been called for this pair.
+    /// Returns `true` if the pair is currently registered.
+    ///
+    /// Registration is independent of liquidity or routing activity.
     pub fn is_pair_registered(env: Env, source: Symbol, destination: Symbol) -> bool {
         env.storage()
             .persistent()
@@ -1239,16 +1199,10 @@ impl StableRouteRouter {
             .unwrap_or(false)
     }
 
-    /// Set the routing fee in basis points for a registered pair.
+    /// Configure the routing fee for a single registered pair.
     ///
-    /// Admin-gated. Rejects values above [`MAX_FEE_BPS`] with
-    /// [`RouterError::FeeBpsTooHigh`]. Idempotent: setting the same
-    /// fee twice is a re-assert and harmless.
-    ///
-    /// Requires the pair to already be registered via
-    /// [`Self::register_pair`]; rejects an unregistered pair with
-    /// [`RouterError::PairNotRegistered`] (#5) so the fee can never be
-    /// configured for a corridor that was never (or no longer) enabled.
+    /// Admin-gated. The fee is expressed in basis points and must not exceed
+    /// [`MAX_FEE_BPS`].
     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
         Self::require_not_paused(&env);
         Self::require_admin(&env);
@@ -1264,16 +1218,10 @@ impl StableRouteRouter {
             .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
     }
 
-    /// Set the routing fee in basis points for multiple registered pairs
-    /// in a single admin-gated call. Each entry is validated identically
-    /// to [`Self::set_pair_fee_bps`] and gets its own `fee_set` event.
+    /// Configure routing fees for multiple registered pairs in a single call.
     ///
-    /// **All-or-nothing:** if any entry fails validation the entire
-    /// transaction is rolled back (Soroban transactions are atomic), so
-    /// callers must ensure every entry is well-formed before invoking
-    /// this. Requires at least one entry; an empty batch panics with
-    /// [`RouterError::EmptyBatch`]. Capped at [`MAX_BATCH_SIZE`] entries;
-    /// exceeding it panics with [`RouterError::BatchTooLarge`].
+    /// Admin-gated. Each entry is validated independently and the transaction
+    /// is atomic: if any entry is invalid, no fee changes are applied.
     pub fn set_pair_fees_bps(env: Env, entries: Vec<(Symbol, Symbol, u32)>) {
         Self::require_not_paused(&env);
         Self::require_admin(&env);
@@ -1297,8 +1245,10 @@ impl StableRouteRouter {
         }
     }
 
-    /// Returns the configured fee in basis points for a pair, or 0 if
-    /// no fee has been set (a registered pair with no fee is free).
+    /// Returns the configured routing fee for the pair, expressed in basis
+    /// points.
+    ///
+    /// Returns `0` when no fee has been configured.
     pub fn get_pair_fee_bps(env: Env, source: Symbol, destination: Symbol) -> u32 {
         Self::read_pair_fee_bps(&env, &source, &destination)
     }
