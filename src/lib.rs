@@ -189,6 +189,11 @@ pub enum DataKey {
     /// Optional absolute per-route fee ceiling (singleton, `i128`,
     /// persistent). When set, the effective fee is `min(bps_fee, cap)`.
     /// Absent ↔ `None` (only the relative `MAX_FEE_BPS` bound applies).
+    /// A stored value of 0 (from a pre-upgrade write) is treated as
+    /// `None` by both `apply_fee_cap` and `get_max_fee_absolute`; zero
+    /// caps are rejected at write time with `ZeroFeeCap` (#21).
+    /// [`StableRouteRouter::clear_max_fee_absolute`] is the supported
+    /// way to remove the cap entirely.
     MaxFeeAbsolute,
     /// Optional absolute per-route fee floor (singleton, `i128`,
     /// persistent). When set, the effective fee is `max(capped_fee, floor)`.
@@ -286,6 +291,10 @@ pub enum RouterError {
     /// `set_pair_cooldown` was called with a value above
     /// [`MAX_COOLDOWN_SECS`].
     CooldownTooLarge = 20,
+    /// `set_max_fee_absolute` was called with zero, which would make every
+    /// route free. Use [`StableRouteRouter::clear_max_fee_absolute`] to
+    /// remove the cap entirely.
+    ZeroFeeCap = 21,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -947,28 +956,43 @@ impl StableRouteRouter {
         env.storage().persistent().get(&DataKey::FeeRecipient)
     }
 
-    /// Clamp `fee` to the configured absolute ceiling when one is set.
-    /// Both the relative `MAX_FEE_BPS` bound and this absolute bound apply;
-    /// the tighter of the two wins. No-op when no absolute cap is configured.
-    fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
-        match env
-            .storage()
+    /// Read the stored absolute fee cap, normalising a pre-upgrade zero to
+    /// `None`. A stored value of 0 is semantically equivalent to "no cap"
+    /// (the write path now rejects zero), so both `apply_fee_cap` and the
+    /// public getter agree on the effective state.
+    fn read_max_fee_cap(env: &Env) -> Option<i128> {
+        env.storage()
             .persistent()
             .get::<_, i128>(&DataKey::MaxFeeAbsolute)
-        {
+            .filter(|cap| *cap > 0)
+    }
+
+    /// Clamp `fee` to the configured absolute ceiling when one is set.
+    /// Both the relative `MAX_FEE_BPS` bound and this absolute bound apply;
+    /// the tighter of the two wins. No-op when no absolute cap is configured
+    /// (or when a pre-upgrade stored zero is normalised to `None`).
+    fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
+        match Self::read_max_fee_cap(env) {
             Some(cap) => fee.min(cap),
             None => fee,
         }
     }
 
     /// Read the absolute per-route fee ceiling, or `None` when unset.
+    ///
+    /// A stored value of 0 (from a pre-upgrade write that was accepted
+    /// before the zero-cap rejection landed) is treated as `None` — the
+    /// same effective state as having no cap. This keeps the public getter
+    /// consistent with [`Self::apply_fee_cap`]'s own read path.
     pub fn get_max_fee_absolute(env: Env) -> Option<i128> {
-        env.storage().persistent().get(&DataKey::MaxFeeAbsolute)
+        Self::read_max_fee_cap(&env)
     }
 
     /// Admin sets the absolute per-route fee ceiling (in source units).
-    /// Rejects negative caps with `AmountMustBePositive` (#6). A cap of `0`
-    /// makes every route effectively free. Emits a `maxfee` event. The cap
+    /// Rejects negative caps with `AmountMustBePositive` (#6) and zero
+    /// caps with [`RouterError::ZeroFeeCap`] (#21) — a zero cap would
+    /// make every route free. To remove the cap entirely, use
+    /// [`Self::clear_max_fee_absolute`]. Emits a `maxfee` event. The cap
     /// composes with `MAX_FEE_BPS`: a route is charged
     /// `min(amount * fee_bps / 10_000, max_fee_absolute)`.
     pub fn set_max_fee_absolute(env: Env, max_fee: i128) {
@@ -976,10 +1000,31 @@ impl StableRouteRouter {
         if max_fee < 0 {
             panic_with_error!(&env, RouterError::AmountMustBePositive);
         }
+        if max_fee == 0 {
+            panic_with_error!(&env, RouterError::ZeroFeeCap);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::MaxFeeAbsolute, &max_fee);
         env.events().publish((symbol_short!("maxfee"),), max_fee);
+    }
+
+    /// Admin removes the absolute per-route fee ceiling, restoring the
+    /// default behaviour where only the relative `MAX_FEE_BPS` bound
+    /// applies.
+    ///
+    /// Idempotent: removing when no cap is configured is a clean no-op.
+    /// Emits a `maxfee_clr` event carrying the previously configured cap
+    /// (`None` on a no-op removal) so indexers can audit cap lifecycle
+    /// changes. The distinct topic (`maxfee_clr` vs `maxfee`) ensures
+    /// revocations are visually distinguishable from cap adjustments in
+    /// the event stream.
+    pub fn clear_max_fee_absolute(env: Env) {
+        Self::require_admin(&env);
+        let removed: Option<i128> = env.storage().persistent().get(&DataKey::MaxFeeAbsolute);
+        env.storage().persistent().remove(&DataKey::MaxFeeAbsolute);
+        env.events()
+            .publish((symbol_short!("mxfee_clr"),), removed);
     }
 
     /// Clamp `fee` to the configured absolute floor when one is set.
@@ -1571,7 +1616,7 @@ mod test {
     /// Mirrors `apply_fee_cap` — apply MaxFeeAbsolute if set.
     fn apply_fee_cap_mirror(fee: i128, max_fee_absolute: Option<i128>) -> i128 {
         match max_fee_absolute {
-            Some(cap) if cap >= 0 => fee.min(cap),
+            Some(cap) if cap > 0 => fee.min(cap),
             _ => fee,
         }
     }
@@ -1705,7 +1750,7 @@ mod test {
         fn prop_capped_fee_matches_pure_math(
             amount in 1i128..1_000_000_000_000_000_000_000_000i128,
             fee_bps in 0u32..=MAX_FEE_BPS,
-            cap in 0i128..1_000_000_000_000_000_000i128,
+            cap in 1i128..1_000_000_000_000_000_000i128,
         ) {
             let env = Env::default();
             let client = setup_pair_with_fee(&env, fee_bps);
@@ -4066,6 +4111,14 @@ mod authorization {
 
     #[test]
     #[should_panic]
+    fn test_clear_max_fee_absolute_requires_admin() {
+        let env = Env::default();
+        let client = setup_scoped(&env);
+        client.clear_max_fee_absolute();
+    }
+
+    #[test]
+    #[should_panic]
     fn test_set_pair_cooldown_requires_admin() {
         let env = Env::default();
         let client = setup_scoped(&env);
@@ -4152,6 +4205,7 @@ mod authorization {
 #[cfg(test)]
 mod fee_cap {
     use super::*;
+    use crate::test::event_payloads;
     use soroban_sdk::{symbol_short, testutils::Address as _};
 
     fn setup_pair(env: &Env) -> (StableRouteRouterClient<'_>, Symbol, Symbol) {
@@ -4194,11 +4248,20 @@ mod fee_cap {
     }
 
     #[test]
-    fn test_cap_of_zero_makes_routes_free() {
+    #[should_panic(expected = "Error(Contract, #21)")]
+    fn test_cap_of_zero_rejected() {
+        let env = Env::default();
+        let (client, _s, _d) = setup_pair(&env);
+        client.set_max_fee_absolute(&0i128);
+    }
+
+    #[test]
+    fn test_cap_of_one_clamps() {
         let env = Env::default();
         let (client, s, d) = setup_pair(&env);
-        client.set_max_fee_absolute(&0i128);
-        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 0);
+        client.set_max_fee_absolute(&1i128);
+        // 1_000_000 * 1% = 10_000, clamped to 1.
+        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 1);
     }
 
     #[test]
@@ -4218,6 +4281,116 @@ mod fee_cap {
         let env = Env::default();
         let (client, _s, _d) = setup_pair(&env);
         client.set_max_fee_absolute(&-1i128);
+    }
+
+    #[test]
+    fn test_clear_max_fee_absolute_removes_cap() {
+        let env = Env::default();
+        let (client, s, d) = setup_pair(&env);
+        client.set_max_fee_absolute(&5_000i128);
+        assert_eq!(client.get_max_fee_absolute(), Some(5_000));
+        // Fee is clamped.
+        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 5_000);
+        client.clear_max_fee_absolute();
+        assert_eq!(client.get_max_fee_absolute(), None);
+        // Fee is no longer clamped — proportional 10_000 applies.
+        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 10_000);
+    }
+
+    #[test]
+    fn test_clear_max_fee_absolute_is_idempotent() {
+        let env = Env::default();
+        let (client, _s, _d) = setup_pair(&env);
+        // Remove when never set — clean no-op.
+        assert_eq!(client.get_max_fee_absolute(), None);
+        client.clear_max_fee_absolute();
+        assert_eq!(client.get_max_fee_absolute(), None);
+        // Set, remove, then remove again — second removal is also a no-op.
+        client.set_max_fee_absolute(&5_000i128);
+        client.clear_max_fee_absolute();
+        assert_eq!(client.get_max_fee_absolute(), None);
+        client.clear_max_fee_absolute();
+        assert_eq!(client.get_max_fee_absolute(), None);
+    }
+
+    #[test]
+    fn test_clear_max_fee_absolute_emits_event() {
+        let env = Env::default();
+        let (client, _s, _d) = setup_pair(&env);
+        client.set_max_fee_absolute(&5_000i128);
+        client.clear_max_fee_absolute();
+        let payloads = event_payloads(&env, symbol_short!("mxfee_clr"));
+        assert_eq!(
+            payloads.len(),
+            1,
+            "clear_max_fee_absolute emits one maxfee_clr event"
+        );
+        let removed: Option<i128> = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("maxfee_clr event data decodes to Option<i128>");
+        assert_eq!(
+            removed,
+            Some(5_000),
+            "event must carry the previously configured cap"
+        );
+    }
+
+    /// A no-op removal still emits `maxfee_clr`, with `None` as the payload,
+    /// so indexers observe every revocation attempt.
+    #[test]
+    fn test_clear_max_fee_absolute_noop_emits_event_with_none() {
+        let env = Env::default();
+        let (client, _s, _d) = setup_pair(&env);
+        client.clear_max_fee_absolute();
+        let payloads = event_payloads(&env, symbol_short!("mxfee_clr"));
+        assert_eq!(payloads.len(), 1);
+        let removed: Option<i128> = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("maxfee_clr event data decodes to Option<i128>");
+        assert_eq!(removed, None);
+    }
+
+    /// A stored zero (from a pre-upgrade write) must be treated as unset by
+    /// both the fee computation path and the public getter, so that a
+    /// previously-accepted zero cap does not continue silently zeroing fees
+    /// after the upgrade.
+    #[test]
+    fn test_stored_zero_fee_cap_treated_as_unset_for_computation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &contract_id);
+        let (s, d) = (symbol_short!("USDC"), symbol_short!("EURC"));
+        client.register_pair(&s, &d);
+        client.set_pair_fee_bps(&s, &d, &100u32);
+        // Directly write MaxFeeAbsolute = 0 into persistent storage,
+        // bypassing the write-path guard that now rejects zero.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::MaxFeeAbsolute, &0i128);
+        });
+        // 1_000_000 * 1% = 10_000, and the stored zero cap must NOT clamp it.
+        assert_eq!(client.compute_route_fee(&s, &d, &1_000_000i128), 10_000);
+    }
+
+    /// The public getter must also normalise a stored zero to None, so
+    /// off-chain systems and the fee computation agree on the effective cap.
+    #[test]
+    fn test_get_max_fee_absolute_normalises_stored_zero_to_none() {
+        let env = Env::default();
+        let (client, _s, _d) = setup_pair(&env);
+        let contract_id = client.address.clone();
+        // Write zero to MaxFeeAbsolute via storage, bypassing the write guard.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::MaxFeeAbsolute, &0i128);
+        });
+        assert_eq!(
+            client.get_max_fee_absolute(),
+            None,
+            "stored zero must be normalised to None"
+        );
     }
 }
 
@@ -4779,6 +4952,15 @@ mod version_reads {
         client.set_max_fee_absolute(&1_000i128);
     }
 
+    /// `clear_max_fee_absolute()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_clear_max_fee_absolute_panics_on_uninitialized_contract() {
+        let env = Env::default();
+        let client = setup_uninitialized(&env);
+        client.clear_max_fee_absolute();
+    }
+
     /// `migrate_v1_to_v2()` panics with `NotInitialized` (#2) when called on an uninitialized contract.
     #[test]
     #[should_panic(expected = "Error(Contract, #2)")]
@@ -5235,6 +5417,18 @@ mod test_i230_paused_sweep {
         client.pause();
         client.set_max_fee_absolute(&5_000_i128);
         assert_eq!(client.get_max_fee_absolute(), Some(5_000));
+    }
+
+    /// `clear_max_fee_absolute` — cap removal; no pause gate. Governance
+    /// cleanup must remain available during an emergency stop.
+    #[test]
+    fn test_clear_max_fee_absolute_succeeds_while_paused() {
+        let env = Env::default();
+        let (client, _admin, _oracle) = setup(&env);
+        client.set_max_fee_absolute(&5_000_i128);
+        client.pause();
+        client.clear_max_fee_absolute();
+        assert_eq!(client.get_max_fee_absolute(), None);
     }
 
     /// `set_oracle` — oracle role grant/rotation; no pause gate.

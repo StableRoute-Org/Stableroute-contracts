@@ -33,11 +33,11 @@ fees, which is why the absolute cap exists.
 
 The admin can configure a singleton absolute ceiling (`set_max_fee_absolute`,
 stored under `DataKey::MaxFeeAbsolute`). When set, `apply_fee_cap`
-(`src/lib.rs:708`) clamps every fee to this value:
+(`src/lib.rs`) clamps every fee to this value:
 
 ```rust
 fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
-    match env.storage().persistent().get::<_, i128>(&DataKey::MaxFeeAbsolute) {
+    match Self::read_max_fee_cap(env) {
         Some(cap) => fee.min(cap),
         None => fee,
     }
@@ -45,10 +45,18 @@ fn apply_fee_cap(env: &Env, fee: i128) -> i128 {
 ```
 
 - **Unset** — the proportional fee is used unchanged.
-- **Set to `C`** — every fee is `min(proportional_fee, C)`.
-- **Set to `0`** — every route is free (cap of zero).
+- **Set to `C`** (`C > 0`) — every fee is `min(proportional_fee, C)`.
+- **Set to `0`** — rejected at write time with `ZeroFeeCap` (#21).
+  Use `clear_max_fee_absolute` to remove the cap entirely.
 
 Setting a negative cap is rejected with `AmountMustBePositive` (#6).
+
+### Pre-upgrade zero normalisation
+
+A stored value of 0 (from a pre-upgrade write that was accepted before the
+zero-cap rejection landed) is treated as `None` by both `apply_fee_cap` and
+the public getter `get_max_fee_absolute`. A shared `read_max_fee_cap` helper
+applies the `filter(|cap| *cap > 0)` normalisation so both paths agree.
 
 ### Precedence
 
@@ -125,6 +133,7 @@ Assumptions: `BPS_DENOMINATOR = 10_000`, `MAX_FEE_BPS = 1_000`.
 | `set_pair_fee_bps` | `(source, destination, fee_bps)` | — | `docs/abi.md` |
 | `set_max_fee_absolute` | `(max_fee)` | — | `docs/abi.md` |
 | `get_max_fee_absolute` | — | `Option<i128>` | `docs/abi.md` |
+| `clear_max_fee_absolute` | — | — | `docs/abi.md` |
 
 ## Test coverage
 

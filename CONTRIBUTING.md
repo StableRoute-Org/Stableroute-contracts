@@ -43,11 +43,11 @@ meaning a given error forever.
 - **Never renumber a shipped variant.** Changing `ContractPaused = 9` to a
   different number silently breaks every caller that matches on `#9`.
 - **New errors get the next free code.** The enum currently goes up to
-  `CooldownTooLarge = 20`, so the next new variant must be `= 21`:
+  `ZeroFeeCap = 21`, so the next new variant must be `= 22`:
 
 ```rust
 // in `enum RouterError`
-SomethingNew = 21, // <- next free code
+SomethingNew = 22, // <- next free code
 ```
 
 Add a `///` doc comment on the new variant describing exactly when it is
@@ -77,6 +77,7 @@ raised, matching the existing entries.
 | 18 | `BatchTooLarge` | Batch exceeds `MAX_BATCH_SIZE` |
 | 19 | `EmptyBatch` | Batch with zero entries |
 | 20 | `CooldownTooLarge` | Cooldown exceeds `MAX_COOLDOWN_SECS` |
+| 21 | `ZeroFeeCap` | Fee cap of zero rejected by `set_max_fee_absolute` |
 
 ## Event topics must fit `symbol_short!` (≤ 9 characters)
 
@@ -101,6 +102,7 @@ a short, abbreviated topic name.
 | `executed` | `accept_admin_transfer`, `force_admin_transfer` | `admin: Address` |
 | `cd_set` | `set_pair_cooldown` | `(source, destination, cooldown_secs): (Symbol, Symbol, u64)` |
 | `maxfee` | `set_max_fee_absolute` | `max_fee: i128` |
+| `mxfee_clr` | `clear_max_fee_absolute` | `cleared_cap: Option<i128>` |
 | `orac_set` | `set_oracle` | `oracle: Address` |
 | `orac_rm` | `remove_oracle` | `removed: Option<Address>` |
 | `pair_mrst` | `purge_pair_metrics` | `(source, destination): (Symbol, Symbol)` |
@@ -310,7 +312,7 @@ The contract uses consistent sentinel values for absent storage slots:
 | `false` | Absent `bool` (pair registration, paused, reentrancy lock) |
 | `i128::MAX` | "Unbounded" for `PairMaxAmount` and liquidity inside `compute_route_fee` |
 | `0` | Counters, fees, timestamps (`u64`), `PairMinAmount`, cooldowns |
-| `None` | Absent `Option` (admin, pending admin, fee recipient, last-route timestamp, max fee absolute, oracle) |
+| `None` | Absent `Option` (admin, pending admin, fee recipient, last-route timestamp, max fee absolute, oracle). A stored `0` in `MaxFeeAbsolute` (pre-upgrade write) is treated as `None` via the `read_max_fee_cap` defensive read helper. |
 | `1` | `SchemaVersion` when absent (implicit pre-migration default) |
 
 When adding a new storage slot, document its sentinel in the `DataKey` enum
@@ -367,11 +369,11 @@ How it works:
   and prints the size delta (bytes and percent). The delta is
   informational; only the budget gates the job.
 
-Current baseline: **68,477 bytes** (re-measured 2026-07-22, rustc 1.91.1,
-after the per-pair route-counter/volume tracking, `get_limits`, and
-absolute min-fee-floor features landed). The budget is set to **69,632
-bytes** (67 KiB rounded up from the baseline, plus 1 KiB), giving roughly
-2 percent headroom for ordinary changes.
+Current baseline: **70,639 bytes** (re-measured 2026-07-24, rustc 1.91.1,
+after the zero-cap rejection, defensive `read_max_fee_cap`, and
+`clear_max_fee_absolute` entrypoint landed). The budget is set to **72,704
+bytes** (70 KiB rounded up from the baseline, plus 1 KiB), giving roughly
+3 percent headroom for ordinary changes.
 
 Run the check locally before pushing:
 

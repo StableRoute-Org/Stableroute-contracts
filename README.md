@@ -155,6 +155,7 @@ in [`src/lib.rs`](src/lib.rs).
 | 18 | `BatchTooLarge` | `register_pairs`, `set_pair_fees_bps` | Batch exceeds `MAX_BATCH_SIZE` (100) entries. Split into smaller batches. |
 | 19 | `EmptyBatch` | `register_pairs`, `set_pair_fees_bps` | Batch must contain at least one entry. |
 | 20 | `CooldownTooLarge` | `set_pair_cooldown` | Cooldown exceeds `MAX_COOLDOWN_SECS` (30 days). Lower the value. |
+| 21 | `ZeroFeeCap` | `set_max_fee_absolute` | Fee cap of zero was rejected. Use `clear_max_fee_absolute` to remove the cap. |
 
 > **Maintainers:** when you append a new `RouterError` variant, add a row
 > here with the next sequential code. Never edit an existing code/row.
@@ -302,7 +303,7 @@ invariants at fixed, human-readable boundary values named in issue #146.
 | Route accounting | `compute_route_fee` | Rejected — `ContractPaused` (#9) |
 | Pair registration | `register_pair`, `register_pairs` | Rejected — `ContractPaused` (#9) |
 | Fee setters | `set_pair_fee_bps`, `set_pair_fees_bps` | Rejected — `ContractPaused` (#9) |
-| Config setters | `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`, `set_pair_cooldown`, `set_fee_recipient`, `set_max_fee_absolute`, `set_oracle`, `remove_oracle` | Succeeds — governance/config ops are not blocked |
+| Config setters | `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_liquidity`, `set_pair_cooldown`, `set_fee_recipient`, `set_max_fee_absolute`, `clear_max_fee_absolute`, `set_oracle`, `remove_oracle` | Succeeds — governance/config ops are not blocked |
 | Pair lifecycle | `unregister_pair`, `purge_pair_metrics` | Succeeds — admin cleanup must remain available |
 | Migration | `migrate_v1_to_v2` | Succeeds — schema ops are not blocked |
 | Governance | `pause` (idempotent), `unpause`, `set_timelock`, `propose_admin_transfer`, `cancel_admin_transfer`, `force_admin_transfer`, `accept_admin_transfer` | Succeeds — governance must work to recover |

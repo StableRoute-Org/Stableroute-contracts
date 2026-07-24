@@ -57,6 +57,9 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `get_pair_fee_bps` | none | `source: Symbol, destination: Symbol` | `u32` | — | — |
 | `set_fee_recipient` | admin | `recipient: Address` | — | `NotInitialized` (#2) | — |
 | `get_fee_recipient` | none | — | `Option<Address>` | — | — |
+| `set_max_fee_absolute` | admin | `max_fee: i128` | — | `NotInitialized` (#2), `AmountMustBePositive` (#6), `ZeroFeeCap` (#21) | `maxfee(max_fee)` |
+| `get_max_fee_absolute` | none | — | `Option<i128>` | — | — |
+| `clear_max_fee_absolute` | admin | — | — | `NotInitialized` (#2) | `mxfee_clr(cleared_cap: Option<i128>)` |
 
 ## Bounds & liquidity
 
@@ -94,6 +97,8 @@ payload tuple. Topic symbols are capped at 9 characters.
 | `unreg` | `(source, destination): (Symbol, Symbol)` | `unregister_pair` |
 | `cfg_clr` | `(source, destination): (Symbol, Symbol)` | `unregister_pair` |
 | `fee_set` | `(source, destination, fee_bps): (Symbol, Symbol, u32)` | `set_pair_fee_bps` |
+| `maxfee` | `max_fee: i128` | `set_max_fee_absolute` |
+| `mxfee_clr` | `cleared_cap: Option<i128>` | `clear_max_fee_absolute` |
 | `liq_set` | `(source, destination, liquidity): (Symbol, Symbol, i128)` | `set_pair_liquidity` |
 | `route` | `(source, destination, amount): (Symbol, Symbol, i128)` | `compute_route_fee` |
 

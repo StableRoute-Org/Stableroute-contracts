@@ -52,6 +52,7 @@ Neither role should be used for the other's responsibilities.
 | get_fee_recipient | | | ✅ |
 | get_max_fee_absolute | | | ✅ |
 | set_max_fee_absolute | ✅ | | |
+| clear_max_fee_absolute | ✅ | | |
 | get_pair_liquidity | | | ✅ |
 | get_oracle | | | ✅ |
 | set_oracle | ✅ | | |

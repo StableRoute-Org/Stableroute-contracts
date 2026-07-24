@@ -55,7 +55,7 @@ persistent keys is the reference mitigation.
 | `Timelock` | `u64` | persistent | **Config** | `0` (instant handover) | `get_timelock`, `propose_admin_transfer` | `set_timelock` |
 | `Paused` | `bool` | persistent | **Config** | `false` | `is_paused`, `register_pair`, `register_pairs`, `set_pair_fee_bps`, `set_pair_fees_bps`, `compute_route_fee` | `pause`, `unpause` |
 | `FeeRecipient` | `Address` | persistent | **Config** | `None` | `get_fee_recipient` | `set_fee_recipient` |
-| `MaxFeeAbsolute` | `i128` | persistent | **Config** | `None` | `get_max_fee_absolute`, `apply_fee_cap` (in `compute_route_fee` and `quote_route`) | `set_max_fee_absolute` |
+| `MaxFeeAbsolute` | `i128` | persistent | **Config** | `None` (a stored `0` is defensively treated as `None` via `read_max_fee_cap`) | `get_max_fee_absolute`, `apply_fee_cap` (in `compute_route_fee` and `quote_route`) | `set_max_fee_absolute`; removed by `clear_max_fee_absolute` |
 | `Oracle` | `Address` | persistent | **Config** | `None` | `get_oracle`, `set_pair_liquidity` (dual-auth check) | `set_oracle`; removed by `remove_oracle` |
 | `TotalRoutesAllTime` | `u64` | persistent | **Hot** | `0` | `get_total_routes_all_time` | `compute_route_fee` (saturating `+1`) |
 | `SchemaVersion` | `u32` | persistent | **Static** | `1` (implicit v1) | `get_schema_version` | `migrate_v1_to_v2` |
