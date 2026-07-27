@@ -27,6 +27,8 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `accept_admin_transfer` | pending | `caller: Address` | — | `NoPendingAdminTransfer` (#7), `NotPendingAdmin` (#8) | `adm_set(caller)` |
 | `cancel_admin_transfer` | admin | — | — | `NotInitialized` (#2) | — |
 | `get_pending_admin` | none | — | `Option<Address>` | — | — |
+| `set_timelock` | admin | `delay_seconds: u64` | — | `NotInitialized` (#2) | `tlock_set(old_delay, new_delay)` |
+| `get_timelock` | none | — | `u64` | — | — |
 
 ## Pause (emergency stop)
 
@@ -43,7 +45,7 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `register_pair` | admin | `source: Symbol, destination: Symbol` | — | `ContractPaused` (#9), `NotInitialized` (#2), `SourceEqualsDestination` (#3) | `pair_reg(source, destination)` |
 | `register_pairs` | admin | `pairs: Vec<(Symbol, Symbol)>` | — | `ContractPaused` (#9), `NotInitialized` (#2), `EmptyBatch` (#19), `BatchTooLarge` (#18), `SourceEqualsDestination` (#3) | `pair_reg(source, destination)` per entry |
 | `unregister_pair` | admin | `source: Symbol, destination: Symbol` | — | `NotInitialized` (#2) | `unreg(source, destination)` |
-| `is_pair_registered` | none | `source: Symbol, destination: Symbol` | `bool` | — | — |
+| `purge_pair_metrics` | admin | `source: Symbol, destination: Symbol` | — | `NotInitialized` (#2) | `metr_rm(source, destination, route_count, volume)` |
 | `is_pair_active` | none | `source: Symbol, destination: Symbol` | `bool` | — | — |
 | `get_pair_info` | none | `source: Symbol, destination: Symbol` | `PairInfo` | — | — |
 | `get_pair_info_ext` | none | `source: Symbol, destination: Symbol` | `PairInfoExt` | — | — |
@@ -102,6 +104,9 @@ payload tuple. Topic symbols are capped at 9 characters.
 | `recip_set` | `recipient: Address` | `set_fee_recipient` |
 | `liq_set` | `(source, destination, liquidity): (Symbol, Symbol, i128)` | `set_pair_liquidity` |
 | `route` | `(source, destination, amount): (Symbol, Symbol, i128)` | `compute_route_fee` |
+| `metr_rm` | `(source, destination, route_count, volume): (Symbol, Symbol, u64, i128)` | `purge_pair_metrics` |
+| `pair_mrst` | `(source, destination): (Symbol, Symbol)` | `purge_pair_metrics` |
+| `tlock_set` | `(old_delay, new_delay): (u64, u64)` | `set_timelock` |
 
 ## Extended pair info (`PairInfoExt`)
 

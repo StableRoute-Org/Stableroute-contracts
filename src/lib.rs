@@ -630,11 +630,22 @@ impl StableRouteRouter {
     /// Admin sets the governance timelock delay (seconds). Applies to the
     /// **next** `propose_admin_transfer`; already-queued actions keep the
     /// eta they were stamped with. Pass 0 to disable (instant handover).
+    ///
+    /// Emits a `tlock_set` event containing the old and new delay values.
+    ///
+    /// # Events
+    ///
+    /// - Topic: `(symbol_short!("tlock_set"),)`
+    /// - Payload: `(old_delay, new_delay): (u64, u64)`
+    /// - When: fires when the governance timelock delay is modified by the admin.
     pub fn set_timelock(env: Env, delay_seconds: u64) {
         Self::require_admin(&env);
+        let old_delay = Self::get_timelock(env.clone());
         env.storage()
             .persistent()
             .set(&DataKey::Timelock, &delay_seconds);
+        env.events()
+            .publish((symbol_short!("tlock_set"),), (old_delay, delay_seconds));
     }
 
     /// Read the earliest timestamp at which the pending admin transfer may
@@ -1254,9 +1265,30 @@ impl StableRouteRouter {
     ///
     /// Admin-gated. Clears the route count, cumulative volume, and last
     /// successful route timestamp.
+    ///
+    /// Publishes a `metr_rm` event **before** clearing so off-chain
+    /// consumers can capture the pre-purge snapshot for auditability:
+    ///
+    /// # Events
+    ///
+    /// - Topic: `(symbol_short!("metr_rm"),)`
+    /// - Payload: `(source, destination, route_count, volume):
+    ///   (Symbol, Symbol, u64, i128)`
+    /// - When: fires immediately before the three metrics slots are
+    ///   removed. `route_count` and `volume` are the values that were
+    ///   stored *before* the purge (defaulting to `0` when absent).
     pub fn purge_pair_metrics(env: Env, source: Symbol, destination: Symbol) {
         Self::require_admin(&env);
         let storage = env.storage().persistent();
+        let route_count: u64 = storage
+            .get(&DataKey::PairRouteCount(
+                source.clone(),
+                destination.clone(),
+            ))
+            .unwrap_or(0);
+        let volume: i128 = storage
+            .get(&DataKey::PairVolume(source.clone(), destination.clone()))
+            .unwrap_or(0);
         storage.remove(&DataKey::PairRouteCount(
             source.clone(),
             destination.clone(),
@@ -1266,6 +1298,10 @@ impl StableRouteRouter {
             source.clone(),
             destination.clone(),
         ));
+        env.events().publish(
+            (symbol_short!("metr_rm"),),
+            (source.clone(), destination.clone(), route_count, volume),
+        );
         env.events()
             .publish((symbol_short!("pair_mrst"),), (source, destination));
     }
@@ -1365,6 +1401,23 @@ impl StableRouteRouter {
     /// before any state mutation. When a decrement does occur a `liq_used`
     /// event carrying `(source, destination, remaining_liquidity)` is
     /// emitted. The slot TTL is extended on each write.
+    ///
+    /// # Key-construction optimisation
+    ///
+    /// Each [`DataKey`] variant that is both *read* and *written* within
+    /// this function — [`DataKey::PairLiquidity`],
+    /// [`DataKey::PairLastRouteAt`], [`DataKey::PairRouteCount`], and
+    /// [`DataKey::PairVolume`] — is constructed **once** into a local
+    /// variable and then referenced by `&` for every subsequent storage
+    /// operation. This replaces the previous pattern of calling
+    /// `DataKey::Variant(source.clone(), destination.clone())` on every
+    /// individual read and write, halving the number of [`Symbol`] clones
+    /// for those hot paths.
+    ///
+    /// The fee calculation (`read_pair_fee_bps` -> arithmetic -> cap ->
+    /// floor) is hoisted **before** the effects section so that the final
+    /// use of `source` and `destination` — the `route` event emission —
+    /// *moves* (consumes) them instead of cloning.
     pub fn compute_route_fee(env: Env, source: Symbol, destination: Symbol, amount: i128) -> i128 {
         // Acquire the reentrancy lock at the very start so that every exit
         // path — success or panic — can explicitly release it. This ensures
@@ -1390,11 +1443,10 @@ impl StableRouteRouter {
         if amount > max_amount {
             Self::route_abort(&env, RouterError::AmountAboveMax);
         }
-        let liquidity: i128 = match env
-            .storage()
-            .persistent()
-            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
-        {
+        // Construct the liquidity key once — shared between the initial
+        // read (guard) and the post-route debit write below.
+        let liq_key = DataKey::PairLiquidity(source.clone(), destination.clone());
+        let liquidity: i128 = match env.storage().persistent().get(&liq_key) {
             Some(0) => Self::route_abort(&env, RouterError::InsufficientLiquidity),
             Some(v) => v,
             None => i128::MAX,
@@ -1403,6 +1455,9 @@ impl StableRouteRouter {
             Self::route_abort(&env, RouterError::InsufficientLiquidity);
         }
 
+        // Construct the last-route-at key once — shared between the
+        // cooldown read and the post-route timestamp write below.
+        let route_at_key = DataKey::PairLastRouteAt(source.clone(), destination.clone());
         // Per-pair rate limit. A non-zero cooldown forces a minimum gap
         // between successive routes for the pair. The first route (no
         // recorded timestamp) is always allowed; cooldown == 0 disables
@@ -1416,14 +1471,7 @@ impl StableRouteRouter {
         // ledger closing time — before this addition could wrap.
         let cooldown = Self::read_pair_cooldown(&env, &source, &destination);
         if cooldown > 0 {
-            if let Some(last) = env
-                .storage()
-                .persistent()
-                .get::<_, u64>(&DataKey::PairLastRouteAt(
-                    source.clone(),
-                    destination.clone(),
-                ))
-            {
+            if let Some(last) = env.storage().persistent().get::<_, u64>(&route_at_key) {
                 if env.ledger().timestamp() < last + cooldown {
                     Self::exit_nonreentrant(&env);
                     panic_with_error!(&env, RouterError::RouteCooldownActive);
@@ -1431,16 +1479,33 @@ impl StableRouteRouter {
             }
         }
 
-        // EFFECTS: after all route guards above have passed, debit
-        // liquidity, write counters/timestamps, and emit events.
+        // Pre-effects: compute fee before state mutations so that
+        // `source` and `destination` can be moved (consumed) into the
+        // final route-event payload below, avoiding two extra clones.
+        // Fee depends only on fee_bps, cap, and floor — none of which
+        // are mutated by the effects section, making this reorder safe.
+        let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
+        // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
+        // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
+        // multiplication is bounded.
+        let fee = amount
+            .checked_mul(fee_bps as i128)
+            .map(|n| n / BPS_DENOMINATOR)
+            .unwrap_or(0);
+        let fee = Self::apply_fee_cap(&env, fee);
+        let fee = Self::apply_fee_floor(&env, fee);
+
+        // ── EFFECTS ──────────────────────────────────────────────────
+        // Debit liquidity, write counters/timestamps, and emit events.
         // When no oracle has set a liquidity value the pair is treated as
         // unbounded — no decrement and no liq_used event are emitted.
+        //
+        // Key variables constructed above (`liq_key`, `route_at_key`,
+        // `route_count_key`, `volume_key`) are reused by `&` reference
+        // here instead of reconstructing them with fresh `.clone()` calls.
         if liquidity != i128::MAX {
             let remaining = liquidity.saturating_sub(amount);
-            env.storage().persistent().set(
-                &DataKey::PairLiquidity(source.clone(), destination.clone()),
-                &remaining,
-            );
+            env.storage().persistent().set(&liq_key, &remaining);
             env.events().publish(
                 (symbol_short!("liq_used"),),
                 (source.clone(), destination.clone(), remaining),
@@ -1454,45 +1519,34 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .set(&DataKey::TotalRoutesAllTime, &total.saturating_add(1));
+
+        // Construct the route-count key once — shared between read and write.
+        let route_count_key = DataKey::PairRouteCount(source.clone(), destination.clone());
         let pair_count: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::PairRouteCount(
-                source.clone(),
-                destination.clone(),
-            ))
+            .get(&route_count_key)
             .unwrap_or(0);
-        env.storage().persistent().set(
-            &DataKey::PairRouteCount(source.clone(), destination.clone()),
-            &pair_count.saturating_add(1),
-        );
-        let pair_volume: i128 = env
-            .storage()
+        env.storage()
             .persistent()
-            .get(&DataKey::PairVolume(source.clone(), destination.clone()))
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &DataKey::PairVolume(source.clone(), destination.clone()),
-            &pair_volume.saturating_add(amount),
-        );
-        env.storage().persistent().set(
-            &DataKey::PairLastRouteAt(source.clone(), destination.clone()),
-            &env.ledger().timestamp(),
-        );
-        env.events().publish(
-            (symbol_short!("route"),),
-            (source.clone(), destination.clone(), amount),
-        );
-        let fee_bps = Self::read_pair_fee_bps(&env, &source, &destination);
-        // amount * fee_bps / 10_000, in i128 to avoid u32*i128 overflow on
-        // amounts near i128::MAX. fee_bps is capped at MAX_FEE_BPS so the
-        // multiplication is bounded.
-        let fee = amount
-            .checked_mul(fee_bps as i128)
-            .map(|n| n / BPS_DENOMINATOR)
-            .unwrap_or(0);
-        let fee = Self::apply_fee_cap(&env, fee);
-        let fee = Self::apply_fee_floor(&env, fee);
+            .set(&route_count_key, &pair_count.saturating_add(1));
+
+        // Construct the volume key once — shared between read and write.
+        let volume_key = DataKey::PairVolume(source.clone(), destination.clone());
+        let pair_volume: i128 = env.storage().persistent().get(&volume_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&volume_key, &pair_volume.saturating_add(amount));
+
+        env.storage()
+            .persistent()
+            .set(&route_at_key, &env.ledger().timestamp());
+
+        // Last use of source/destination — moved (consumed) rather than
+        // cloned, saving one Symbol clone pair on the hot path.
+        env.events()
+            .publish((symbol_short!("route"),), (source, destination, amount));
+
         Self::exit_nonreentrant(&env);
         fee
     }
@@ -2181,6 +2235,36 @@ mod test {
         assert_eq!(client.get_timelock(), 0);
     }
 
+    #[test]
+    fn test_set_timelock_emits_event() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+
+        // 1. Zero-to-nonzero transition: old timelock is 0, new value nonzero
+        client.set_timelock(&100);
+        let payloads = event_payloads(&env, symbol_short!("tlock_set"));
+        assert_eq!(payloads.len(), 1, "should emit exactly one event");
+        let event_data: (u64, u64) = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("tlock_set event data decodes");
+        assert_eq!(event_data, (0, 100));
+
+        // 2. Normal change: old timelock nonzero, new value nonzero
+        client.set_timelock(&200);
+        let payloads = event_payloads(&env, symbol_short!("tlock_set"));
+        assert_eq!(payloads.len(), 1, "should emit a second event");
+        let event_data: (u64, u64) = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("tlock_set event data decodes");
+        assert_eq!(event_data, (100, 200));
+
+        // 3. Nonzero-to-zero transition: old timelock nonzero, new value 0
+        client.set_timelock(&0);
+        let payloads = event_payloads(&env, symbol_short!("tlock_set"));
+        assert_eq!(payloads.len(), 1, "should emit a third event");
+        let event_data: (u64, u64) = soroban_sdk::TryFromVal::try_from_val(&env, &payloads[0])
+            .expect("tlock_set event data decodes");
+        assert_eq!(event_data, (200, 0));
+    }
+
     /// With a delay set, accepting the handover before the eta is rejected
     /// with TimelockNotElapsed (#14).
     #[test]
@@ -2551,9 +2635,24 @@ mod test {
 
         client.purge_pair_metrics(&src, &dest);
 
-        // Check the emitted event immediately after the triggering call,
+        // Check the emitted events immediately after the triggering call,
         // before any further client invocation can roll the host event
         // buffer over to a later call's events.
+        let metr_rm_payloads = event_payloads(&env, symbol_short!("metr_rm"));
+        assert_eq!(
+            metr_rm_payloads.len(),
+            1,
+            "purge_pair_metrics emits exactly one metr_rm event"
+        );
+        let decoded_rm: (Symbol, Symbol, u64, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &metr_rm_payloads[0])
+                .expect("metr_rm event data decodes to (pair, route_count, volume)");
+        assert_eq!(
+            decoded_rm,
+            (src.clone(), dest.clone(), 1, 2_000),
+            "metr_rm event must carry the pre-purge route count and volume"
+        );
+
         let payloads = event_payloads(&env, symbol_short!("pair_mrst"));
         assert_eq!(
             payloads.len(),
@@ -2611,6 +2710,84 @@ mod test {
             },
         }]);
         client.purge_pair_metrics(&src, &dest);
+    }
+
+    /// `purge_pair_metrics` emits a `metr_rm` event with the correct
+    /// pre-purge route count and cumulative volume even when those values
+    /// are non-trivial (multiple routes, large volume).
+    #[test]
+    fn test_metr_rm_event_carrying_populated_metrics() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+
+        // Run two routes so the counters are > 1 and the volume is large.
+        env.ledger().set_timestamp(100);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+        env.ledger().set_timestamp(200);
+        client.compute_route_fee(&src, &dest, &3_000_i128);
+
+        assert_eq!(client.get_pair_route_count(&src, &dest), 2);
+        assert_eq!(client.get_pair_volume(&src, &dest), 4_000);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), Some(200));
+
+        client.purge_pair_metrics(&src, &dest);
+
+        // The metr_rm event must carry the *pre-purge* values.
+        let metr_rm_payloads = event_payloads(&env, symbol_short!("metr_rm"));
+        assert_eq!(
+            metr_rm_payloads.len(),
+            1,
+            "purge_pair_metrics emits exactly one metr_rm event"
+        );
+        let decoded: (Symbol, Symbol, u64, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &metr_rm_payloads[0])
+                .expect("metr_rm event data decodes");
+        assert_eq!(
+            decoded,
+            (src.clone(), dest.clone(), 2, 4_000),
+            "metr_rm payload must contain the pre-purge route count and volume"
+        );
+
+        // After the purge the counters must be zero and the slots absent.
+        assert_eq!(client.get_pair_route_count(&src, &dest), 0);
+        assert_eq!(client.get_pair_volume(&src, &dest), 0);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), None);
+    }
+
+    /// `purge_pair_metrics` emits a `metr_rm` event even when the pair has
+    /// never been routed — the payload must carry zero/default values and
+    /// must not panic.
+    #[test]
+    fn test_metr_rm_event_with_no_recorded_metrics() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+        let client = setup_routable_pair(&env, &src, &dest, 50u32);
+
+        // Do NOT call compute_route_fee — counters are at their defaults.
+        assert_eq!(client.get_pair_route_count(&src, &dest), 0);
+        assert_eq!(client.get_pair_volume(&src, &dest), 0);
+        assert_eq!(client.get_pair_last_route_at(&src, &dest), None);
+
+        client.purge_pair_metrics(&src, &dest);
+
+        // The event must still be emitted with zero values.
+        let metr_rm_payloads = event_payloads(&env, symbol_short!("metr_rm"));
+        assert_eq!(
+            metr_rm_payloads.len(),
+            1,
+            "purge_pair_metrics emits metr_rm even for an unrouted pair"
+        );
+        let decoded: (Symbol, Symbol, u64, i128) =
+            soroban_sdk::TryFromVal::try_from_val(&env, &metr_rm_payloads[0])
+                .expect("metr_rm event data decodes");
+        assert_eq!(
+            decoded,
+            (src.clone(), dest.clone(), 0, 0),
+            "metr_rm payload must carry zeros when no metrics existed"
+        );
     }
 
     #[test]
@@ -4182,11 +4359,23 @@ mod authorization {
     }
 
     #[test]
-    #[should_panic]
     fn test_set_timelock_requires_admin() {
         let env = Env::default();
         let client = setup_scoped(&env);
-        client.set_timelock(&100u64);
+
+        // Attempting set_timelock by unauthorized caller should panic
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.set_timelock(&100u64);
+        }));
+        assert!(result.is_err(), "unauthorized set_timelock must panic");
+
+        // Verify no tlock_set events were emitted
+        let payloads = crate::test::event_payloads(&env, symbol_short!("tlock_set"));
+        assert_eq!(
+            payloads.len(),
+            0,
+            "no events should be emitted on failed auth"
+        );
     }
 
     #[test]
@@ -5733,5 +5922,330 @@ mod test_i225_remove_oracle {
             .expect("orac_rm decodes to Option<Address>");
         assert_eq!(removed, None);
         assert_eq!(client.get_oracle(), None);
+    }
+}
+
+/// Inline unit tests for `compute_route_fee` key-construction optimisation.
+///
+/// These tests exercise the refactored paths where `DataKey` variants are
+/// constructed once and reused, verifying that behaviour is unchanged and
+/// that edge cases (bounded vs unbounded liquidity, cooldown gating,
+/// fee cap/floor, consecutive calls, event payloads) are all covered.
+#[cfg(test)]
+mod test_compute_route_fee_keys {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{symbol_short, Env};
+
+    /// Helper: initialise a router, register USDC→EURC, set fee_bps.
+    /// Returns `(client, admin)` so callers can use `admin` for
+    /// `set_pair_liquidity` (which requires admin or oracle auth).
+    fn setup(env: &Env, fee_bps: u32) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &contract_id);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &fee_bps);
+        (client, admin)
+    }
+
+    // ── Happy-path: basic fee calculation ──────────────────────────
+
+    #[test]
+    fn fee_basic_with_50_bps() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        // 1_000_000 * 50 / 10_000 = 5_000
+        let fee = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        assert_eq!(fee, 5_000);
+    }
+
+    #[test]
+    fn fee_zero_when_fee_bps_is_zero() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        let fee = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        assert_eq!(fee, 0);
+    }
+
+    // ── Guard: rejected paths ──────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn rejects_unregistered_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        // Never register the pair.
+        client.compute_route_fee(&symbol_short!("AAAB"), &symbol_short!("CCCC"), &100_i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn rejects_zero_amount() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &0_i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn rejects_negative_amount() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &(-1_i128));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #9)")]
+    fn rejects_when_paused() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        client.pause();
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+    }
+
+    // ── Bounds: min / max amount ───────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn rejects_below_minimum() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &999_i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #11)")]
+    fn rejects_above_maximum() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 50);
+        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &500_i128);
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &501_i128);
+    }
+
+    #[test]
+    fn succeeds_at_exact_minimum() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        client.set_pair_min_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+        let fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+        assert_eq!(fee, 0);
+    }
+
+    #[test]
+    fn succeeds_at_exact_maximum() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        client.set_pair_max_amount(&symbol_short!("USDC"), &symbol_short!("EURC"), &500_i128);
+        let fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &500_i128);
+        assert_eq!(fee, 0);
+    }
+
+    // ── Liquidity: bounded and unbounded paths ─────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn rejects_explicit_zero_liquidity() {
+        let env = Env::default();
+        let (client, admin) = setup(&env, 0);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &0_i128,
+        );
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #12)")]
+    fn rejects_amount_exceeding_bounded_liquidity() {
+        let env = Env::default();
+        let (client, admin) = setup(&env, 0);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &500_i128,
+        );
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &501_i128);
+    }
+
+    #[test]
+    fn succeeds_with_unbounded_liquidity_when_unset() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        // No liquidity set → treated as i128::MAX (unbounded).
+        let fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &i128::MAX);
+        assert_eq!(fee, 0);
+    }
+
+    #[test]
+    fn bounded_liquidity_decremented_correctly() {
+        let env = Env::default();
+        let (client, admin) = setup(&env, 0);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &10_000_i128,
+        );
+        let _fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &3_000_i128);
+        let remaining = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(remaining, 7_000);
+    }
+
+    #[test]
+    fn unbounded_liquidity_not_written() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        // No liquidity set → unbounded → no decrement.
+        let _fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+        // get_pair_liquidity returns 0 for absent slots.
+        let liq = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(liq, 0);
+    }
+
+    // ── Cooldown gating ────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn rejects_within_cooldown_window() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        client.set_pair_cooldown(&symbol_short!("USDC"), &symbol_short!("EURC"), &60_u64);
+        // First route succeeds.
+        let _fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+        // Second route within 60s → rejected.
+        client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+    }
+
+    // ── Counter / timestamp / event side-effects ───────────────────
+
+    #[test]
+    fn counter_increments_on_each_route() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        let before = client.get_total_routes_all_time();
+        let _f1 =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+        let after1 = client.get_total_routes_all_time();
+        assert_eq!(after1, before + 1);
+        let _f2 =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &200_i128);
+        let after2 = client.get_total_routes_all_time();
+        assert_eq!(after2, before + 2);
+    }
+
+    #[test]
+    fn pair_route_count_increments() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        let before = client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        let _f =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &500_i128);
+        let after = client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn pair_volume_accumulates() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        let _f1 =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+        let _f2 =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &2_500_i128);
+        let vol = client.get_pair_volume(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(vol, 3_500);
+    }
+
+    #[test]
+    fn last_route_at_is_stamped() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0);
+        let before = env.ledger().timestamp();
+        let _f =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &100_i128);
+        let ts = client.get_pair_last_route_at(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(ts, Some(before));
+    }
+
+    // ── Consecutive calls: reentrancy lock released ────────────────
+
+    #[test]
+    fn consecutive_calls_succeed() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 10);
+        for i in 1..=5 {
+            let fee = client.compute_route_fee(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &(i * 1_000_i128),
+            );
+            assert!(fee >= 0);
+        }
+        assert_eq!(client.get_total_routes_all_time(), 5);
+    }
+
+    // ── Fee cap / floor ────────────────────────────────────────────
+
+    #[test]
+    fn fee_capped_by_absolute_max() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 500); // 5% fee
+        client.set_max_fee_absolute(&100_i128);
+        // Without cap: 1_000_000 * 500 / 10_000 = 50_000 → capped to 100.
+        let fee = client.compute_route_fee(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_000_i128,
+        );
+        assert_eq!(fee, 100);
+    }
+
+    #[test]
+    fn fee_raised_by_absolute_min() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 0); // 0% fee
+        client.set_min_fee_absolute(&500_i128);
+        // Fee would be 0, but floor raises it to 500.
+        let fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &10_000_i128);
+        assert_eq!(fee, 500);
+    }
+
+    // ── Edge: amount equals exact liquidity ─────────────────────────
+
+    #[test]
+    fn succeeds_when_amount_equals_liquidity() {
+        let env = Env::default();
+        let (client, admin) = setup(&env, 0);
+        client.set_pair_liquidity(
+            &admin,
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_i128,
+        );
+        let _fee =
+            client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
+        let remaining = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        assert_eq!(remaining, 0);
     }
 }
