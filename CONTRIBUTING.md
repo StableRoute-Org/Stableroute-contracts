@@ -10,6 +10,7 @@ Questions or want to coordinate? Join the StableRoute Discord:
 
 ---
 
+- [Impl block sections](#impl-block-sections)
 - [Error codes are append-only](#error-codes-are-append-only)
 - [Event topics must fit `symbol_short!` (≤ 9 characters)](#event-topics-must-fit-symbol_short--9-characters)
 - [Admin-auth pattern](#admin-auth-pattern)
@@ -28,6 +29,35 @@ Questions or want to coordinate? Join the StableRoute Discord:
 - [PR checklist](#pr-checklist)
 
 ---
+
+## Impl block sections
+
+The single `#[contractimpl]` block in `src/lib.rs` is organised into
+clearly delimited sections so new contributors can navigate the file
+quickly. Every new public entrypoint **must** land in the correct section;
+private helpers go in the private-helpers section at the bottom.
+
+### Section order
+
+| # | Section | Header | What belongs here |
+|---|---------|--------|-------------------|
+| 1 | **Lifecycle** | `// -- Lifecycle` | `__constructor`, `init`, `migrate_v1_to_v2` |
+| 2 | **Governance** | `// -- Governance` | `pause`, `unpause`, `set_timelock`, `propose_admin_transfer`, `accept_admin_transfer`, `force_admin_transfer`, `cancel_admin_transfer` |
+| 3 | **Roles** | `// -- Roles` | `set_fee_recipient`, `set_oracle`, `remove_oracle` |
+| 4 | **Pair config** | `// -- Pair config` | `register_pair`, `register_pairs`, `unregister_pair`, `set_pair_fee_bps`, `set_pair_fees_bps`, `set_pair_min_amount`, `set_pair_max_amount`, `set_pair_cooldown`, `set_pair_liquidity`, `set_max_fee_absolute`, `clear_max_fee_absolute`, `set_min_fee_absolute`, `purge_pair_metrics` |
+| 5 | **Reads** | `// -- Reads` | All pure getters: `version`, `get_schema_version`, `get_limits`, `is_paused`, `get_timelock`, `get_admin`, `get_pending_admin`, `get_pending_admin_info`, `get_pending_admin_eta`, `get_fee_recipient`, `get_oracle`, `get_max_fee_absolute`, `get_min_fee_absolute`, `get_pair_info`, `get_pair_info_ext`, `is_pair_active`, `is_pair_registered`, `get_pair_fee_bps`, `get_pair_min_amount`, `get_pair_max_amount`, `get_pair_liquidity`, `get_pair_cooldown`, `get_pair_last_route_at`, `get_pair_route_count`, `get_pair_volume`, `get_total_routes_all_time` |
+| 6 | **Routing** | `// -- Routing` | `quote_route`, `compute_route_fee`, `route_tag` |
+| 7 | **Upgrade** | `// -- Upgrade` | `upgrade` |
+| 8 | **Private helpers** | `// -- Private helpers` | Internal `fn` functions that never appear in the generated client ABI |
+
+### Rules
+
+- Sections are separated by a `// -- Section name` comment header.
+- Within each section, group related setter/getter pairs together.
+- Place private helpers at the bottom so ABI-affecting functions are
+  always above the fold.
+- Do **not** reorder functions across sections as a drive-by change;
+  that belongs in a dedicated PR.
 
 ## Error codes are append-only
 
@@ -101,8 +131,14 @@ a short, abbreviated topic name.
 | `queued` | `propose_admin_transfer` | `(new_admin, eta): (Address, u64)` |
 | `executed` | `accept_admin_transfer`, `force_admin_transfer` | `admin: Address` |
 | `cd_set` | `set_pair_cooldown` | `(source, destination, cooldown_secs): (Symbol, Symbol, u64)` |
+| `tlock_set` | `set_timelock` | `(old_delay, new_delay): (u64, u64)` |
+| `recip_set` | `set_fee_recipient` | `recipient: Address` |
 | `maxfee` | `set_max_fee_absolute` | `max_fee: i128` |
 | `mxfee_clr` | `clear_max_fee_absolute` | `cleared_cap: Option<i128>` |
+| `minfee` | `set_min_fee_absolute` | `min_fee: i128` |
+| `max_set` | `set_pair_max_amount` | `(source, destination, max_amount): (Symbol, Symbol, i128)` |
+| `min_set` | `set_pair_min_amount` | `(source, destination, min_amount): (Symbol, Symbol, i128)` |
+| `metr_rm` | `purge_pair_metrics` | `(source, destination, route_count, volume): (Symbol, Symbol, u64, i128)` |
 | `orac_set` | `set_oracle` | `oracle: Address` |
 | `orac_rm` | `remove_oracle` | `removed: Option<Address>` |
 | `pair_mrst` | `purge_pair_metrics` | `(source, destination): (Symbol, Symbol)` |
