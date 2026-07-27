@@ -20,6 +20,26 @@ constants below:
 | Max batch size | `MAX_BATCH_SIZE` | `100` entries | `register_pairs`, `set_pair_fees_bps` |
 | Max cooldown | `MAX_COOLDOWN_SECS` | `2_592_000` s (30 days) | `set_pair_cooldown` |
 
+### Batch size boundary behavior
+
+Both `register_pairs` and `set_pair_fees_bps` enforce the following batch
+size rules:
+
+| Batch length | Outcome | Error |
+|-------------|---------|-------|
+| `0` (empty) | **Panics** | `EmptyBatch` (#19) |
+| `1` ..= `100` | **Succeeds** | — |
+| `101`+ | **Panics** | `BatchTooLarge` (#18) |
+
+When a batch panics, Soroban's transaction atomicity guarantees that **no
+state is written** — no pairs are registered and no fees are set for any
+entry in the batch. This holds for both `EmptyBatch` and `BatchTooLarge`
+rejections.
+
+The boundary at exactly `MAX_BATCH_SIZE` (100) is the largest accepted
+batch. Callers should split larger workloads into multiple transactions
+of at most 100 entries each.
+
 The `RouterLimits` field order is a stable part of the on-chain ABI — do not
 reorder or insert fields. See [`docs/abi.md`](docs/abi.md) for the authoritative
 reference.

@@ -4932,6 +4932,179 @@ mod test_batch {
             (symbol_short!("USDC"), symbol_short!("EURC"), 25u32),
         ]);
     }
+
+    /// Boundary test: a batch of exactly MAX_BATCH_SIZE (100) entries is
+    /// the largest accepted by `register_pairs`. Every pair is registered
+    /// and queryable via `is_pair_registered`.
+    #[test]
+    fn test_register_pairs_exact_max_batch_size_succeeds() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        env.cost_estimate().disable_resource_limits();
+        let mut pairs = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE {
+            pairs.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+        client.register_pairs(&Vec::from_slice(&env, &pairs));
+        for i in 0..MAX_BATCH_SIZE {
+            assert!(client.is_pair_registered(
+                &Symbol::new(&env, &std::format!("SRC{}", i)),
+                &Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+    }
+
+    /// Boundary test: a batch of exactly MAX_BATCH_SIZE (100) entries is
+    /// the largest accepted by `set_pair_fees_bps`. All 100 fee entries
+    /// are written and readable via `get_pair_fee_bps`.
+    #[test]
+    fn test_set_pair_fees_bps_exact_max_batch_size_succeeds() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        env.cost_estimate().disable_resource_limits();
+        // Register all 100 pairs first.
+        let mut pairs = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE {
+            pairs.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+        client.register_pairs(&Vec::from_slice(&env, &pairs));
+        // Set fees for all 100 pairs.
+        let mut entries = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE {
+            entries.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+                10u32 + (i as u32),
+            ));
+        }
+        client.set_pair_fees_bps(&Vec::from_slice(&env, &entries));
+        for i in 0..MAX_BATCH_SIZE {
+            assert_eq!(
+                client.get_pair_fee_bps(
+                    &Symbol::new(&env, &std::format!("SRC{}", i)),
+                    &Symbol::new(&env, &std::format!("DST{}", i)),
+                ),
+                10u32 + (i as u32),
+            );
+        }
+    }
+
+    /// Boundary test: a batch of MAX_BATCH_SIZE + 1 (101) entries is
+    /// rejected by `register_pairs` with `BatchTooLarge` (#18). The
+    /// pre-registered pair remains registered, confirming atomic rollback.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #18)")]
+    fn test_register_pairs_batch_too_large_leaves_state_intact() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        // Pre-register a known pair.
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE")),
+        ]);
+        assert!(client.is_pair_registered(
+            &symbol_short!("SRC_PRE"),
+            &symbol_short!("DST_PRE"),
+        ));
+        // Attempt MAX_BATCH_SIZE + 1 entries — must panic with #18.
+        let mut pairs = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE + 1 {
+            pairs.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+            ));
+        }
+        client.register_pairs(&Vec::from_slice(&env, &pairs));
+    }
+
+    /// Boundary test: a batch of MAX_BATCH_SIZE + 1 (101) entries is
+    /// rejected by `set_pair_fees_bps` with `BatchTooLarge` (#18). The
+    /// pre-set fee remains unchanged, confirming atomic rollback.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #18)")]
+    fn test_set_pair_fees_bps_batch_too_large_leaves_state_intact() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        // Register a pair and set its fee.
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE")),
+        ]);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE"), 42u32),
+        ]);
+        assert_eq!(
+            client.get_pair_fee_bps(
+                &symbol_short!("SRC_PRE"),
+                &symbol_short!("DST_PRE"),
+            ),
+            42,
+        );
+        // Attempt MAX_BATCH_SIZE + 1 entries — must panic with #18.
+        let mut entries = std::vec::Vec::new();
+        for i in 0..MAX_BATCH_SIZE + 1 {
+            entries.push((
+                Symbol::new(&env, &std::format!("SRC{}", i)),
+                Symbol::new(&env, &std::format!("DST{}", i)),
+                10u32,
+            ));
+        }
+        client.set_pair_fees_bps(&Vec::from_slice(&env, &entries));
+    }
+
+    /// Boundary test: an empty batch for `register_pairs` panics with
+    /// `EmptyBatch` (#19) and leaves pre-existing registration intact.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_register_pairs_empty_batch_leaves_state_intact() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        // Pre-register a known pair.
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE")),
+        ]);
+        assert!(client.is_pair_registered(
+            &symbol_short!("SRC_PRE"),
+            &symbol_short!("DST_PRE"),
+        ));
+        // Empty batch must panic with #19.
+        client.register_pairs(&vec![&env]);
+    }
+
+    /// Boundary test: an empty batch for `set_pair_fees_bps` panics with
+    /// `EmptyBatch` (#19) and leaves pre-existing fee config intact.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_set_pair_fees_bps_empty_batch_leaves_state_intact() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env);
+        // Register a pair and set its fee.
+        client.register_pairs(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE")),
+        ]);
+        client.set_pair_fees_bps(&vec![
+            &env,
+            (symbol_short!("SRC_PRE"), symbol_short!("DST_PRE"), 42u32),
+        ]);
+        assert_eq!(
+            client.get_pair_fee_bps(
+                &symbol_short!("SRC_PRE"),
+                &symbol_short!("DST_PRE"),
+            ),
+            42,
+        );
+        // Empty batch must panic with #19.
+        client.set_pair_fees_bps(&vec![&env]);
+    }
 }
 
 /// Issue #153: Test coverage for the version surface and NotInitialized paths.
