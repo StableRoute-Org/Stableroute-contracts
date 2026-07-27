@@ -5005,7 +5005,7 @@ mod test_batch {
             entries.push((
                 Symbol::new(&env, &std::format!("SRC{}", i)),
                 Symbol::new(&env, &std::format!("DST{}", i)),
-                10u32 + (i as u32),
+                10u32 + i,
             ));
         }
         client.set_pair_fees_bps(&Vec::from_slice(&env, &entries));
@@ -5015,7 +5015,7 @@ mod test_batch {
                     &Symbol::new(&env, &std::format!("SRC{}", i)),
                     &Symbol::new(&env, &std::format!("DST{}", i)),
                 ),
-                10u32 + (i as u32),
+                10u32 + i,
             );
         }
     }
