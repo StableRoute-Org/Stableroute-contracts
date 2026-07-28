@@ -822,9 +822,7 @@ impl StableRouteRouter {
     pub fn set_pair_fee_bps(env: Env, source: Symbol, destination: Symbol, fee_bps: u32) {
         Self::require_not_paused(&env);
         Self::require_admin(&env);
-        if fee_bps > MAX_FEE_BPS {
-            panic_with_error!(&env, RouterError::FeeBpsTooHigh);
-        }
+        Self::require_valid_fee_bps(&env, fee_bps);
         Self::require_pair_registered(&env, &source, &destination);
         env.storage().persistent().set(
             &DataKey::PairFeeBps(source.clone(), destination.clone()),
@@ -848,9 +846,7 @@ impl StableRouteRouter {
             panic_with_error!(&env, RouterError::BatchTooLarge);
         }
         for (source, destination, fee_bps) in entries.iter() {
-            if fee_bps > MAX_FEE_BPS {
-                panic_with_error!(&env, RouterError::FeeBpsTooHigh);
-            }
+            Self::require_valid_fee_bps(&env, fee_bps);
             Self::require_pair_registered(&env, &source, &destination);
             env.storage().persistent().set(
                 &DataKey::PairFeeBps(source.clone(), destination.clone()),
@@ -1477,6 +1473,14 @@ impl StableRouteRouter {
     fn require_not_paused(env: &Env) {
         if Self::paused(env) {
             panic_with_error!(env, RouterError::ContractPaused);
+        }
+    }
+
+    /// Require that `fee_bps` does not exceed [`MAX_FEE_BPS`].
+    /// Panics with [`RouterError::FeeBpsTooHigh`] if invalid.
+    fn require_valid_fee_bps(env: &Env, fee_bps: u32) {
+        if fee_bps > MAX_FEE_BPS {
+            panic_with_error!(env, RouterError::FeeBpsTooHigh);
         }
     }
 
@@ -6433,5 +6437,24 @@ mod test_compute_route_fee_keys {
             client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
         let remaining = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn test_require_valid_fee_bps_helper_valid_and_invalid() {
+        let env = Env::default();
+        let (client, _admin) = setup(&env, 100);
+        // Valid fee_bps (within MAX_FEE_BPS = 1000)
+        client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &1000_u32);
+        assert_eq!(
+            client.get_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            1000
+        );
+        // Invalid fee_bps (> MAX_FEE_BPS)
+        let res = client.try_set_pair_fee_bps(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1001_u32,
+        );
+        assert!(res.is_err());
     }
 }
