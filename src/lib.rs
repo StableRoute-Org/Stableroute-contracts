@@ -3134,6 +3134,63 @@ mod test {
     }
 
     #[test]
+    fn test_compute_route_fee_allows_at_exact_cooldown_boundary() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+
+        let client = setup_routable_pair(&env, &src, &dest, 50);
+
+        client.set_pair_cooldown(&src, &dest, &60);
+
+        // First successful route at timestamp 100.
+        env.ledger().set_timestamp(100);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+
+        // Exactly last + cooldown (100 + 60) must be allowed.
+        env.ledger().set_timestamp(160);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_compute_route_fee_rejects_before_cooldown_boundary() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+
+        let client = setup_routable_pair(&env, &src, &dest, 50);
+
+        client.set_pair_cooldown(&src, &dest, &60);
+
+        // First successful route at timestamp 100.
+        env.ledger().set_timestamp(100);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+
+        // One second before the boundary must still be rejected.
+        env.ledger().set_timestamp(159);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+    }
+
+    #[test]
+    fn test_compute_route_fee_allows_after_cooldown_boundary() {
+        let env = Env::default();
+        let src = symbol_short!("USDC");
+        let dest = symbol_short!("EURC");
+
+        let client = setup_routable_pair(&env, &src, &dest, 50);
+
+        client.set_pair_cooldown(&src, &dest, &60);
+
+        // First successful route at timestamp 100.
+        env.ledger().set_timestamp(100);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+
+        // After the boundary must also be allowed.
+        env.ledger().set_timestamp(161);
+        client.compute_route_fee(&src, &dest, &1_000_i128);
+    }
+    #[test]
     fn test_compute_route_fee_counter_is_global_across_pairs() {
         let env = Env::default();
         // Pair A.
