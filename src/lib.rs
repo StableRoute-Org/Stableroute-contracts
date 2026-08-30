@@ -15,6 +15,8 @@ use soroban_sdk::{
 mod pool_storage;
 use pool_storage::{bump_key_ttl, bump_pair_ttl};
 
+mod error_taxonomy;
+
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6512,3 +6514,6 @@ mod test_compute_route_fee_keys {
 
 #[cfg(test)]
 mod admin_handover_tests;
+
+#[cfg(test)]
+mod swap_event_tests;

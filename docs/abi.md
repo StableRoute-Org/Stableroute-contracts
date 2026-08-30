@@ -103,6 +103,7 @@ payload tuple. Topic symbols are capped at 9 characters.
 | `max_set` | `(source, destination, max_amount): (Symbol, Symbol, i128)` | `set_pair_max_amount` |
 | `recip_set` | `recipient: Address` | `set_fee_recipient` |
 | `liq_set` | `(source, destination, liquidity): (Symbol, Symbol, i128)` | `set_pair_liquidity` |
+| `liq_used` | `(source, destination, remaining_liquidity): (Symbol, Symbol, i128)` | `compute_route_fee` when bounded liquidity is debited |
 | `route` | `(source, destination, amount): (Symbol, Symbol, i128)` | `compute_route_fee` |
 | `metr_rm` | `(source, destination, route_count, volume): (Symbol, Symbol, u64, i128)` | `purge_pair_metrics` |
 | `pair_mrst` | `(source, destination): (Symbol, Symbol)` | `purge_pair_metrics` |
