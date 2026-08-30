@@ -110,6 +110,7 @@ pub fn operation_for(error: RouterError) -> PoolOperation {
         RouterError::RouteCooldownActive => PoolOperation::Compute,
         RouterError::BatchTooLarge | RouterError::EmptyBatch => PoolOperation::Batch,
         RouterError::CooldownTooLarge => PoolOperation::ConfigureCooldown,
+        RouterError::InvalidAdminAddress => PoolOperation::Governance,
     }
 }
 
