@@ -14,6 +14,7 @@ use soroban_sdk::{
 
 mod pool_storage;
 use pool_storage::{bump_key_ttl, bump_pair_ttl};
+mod error_taxonomy;
 
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
@@ -42,6 +43,19 @@ pub struct PairInfoExt {
     pub cooldown_secs: u64,
     pub route_count: u64,
     pub volume: i128,
+}
+
+/// Live fee and amount limits for one registered routing pair.
+///
+/// This aggregate is intentionally composed from the existing pair-scoped
+/// storage slots, so adding the setter does not change storage layout or the
+/// encoding of [`PairInfo`] and [`PairInfoExt`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairParameters {
+    pub fee_bps: u32,
+    pub min_amount: i128,
+    pub max_amount: i128,
 }
 
 /// Aggregated read of the queued admin handover: the proposed pending
@@ -319,6 +333,9 @@ pub enum RouterError {
     ZeroFeeCap = 21,
     /// An admin handover targeted the current admin or this contract itself.
     InvalidAdminAddress = 22,
+    /// A combined pair-parameter update has a negative minimum, a non-positive
+    /// maximum, or a minimum greater than its maximum.
+    InvalidParameterRange = 23,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -866,6 +883,73 @@ impl StableRouteRouter {
                 .get(&DataKey::PairLastRouteAt(source, destination))
                 .unwrap_or(0),
         }
+    }
+
+    /// Read the fee and amount limits for a registered pair as one snapshot.
+    ///
+    /// The view returns the same sentinels as the individual getters: a zero
+    /// minimum and `i128::MAX` maximum when no amount bounds were configured.
+    /// It is read-only and does not require admin authorization.
+    pub fn get_pair_parameters(env: Env, source: Symbol, destination: Symbol) -> PairParameters {
+        PairParameters {
+            fee_bps: Self::read_pair_fee_bps(&env, &source, &destination),
+            min_amount: Self::read_pair_min(&env, &source, &destination),
+            max_amount: Self::read_pair_max(&env, &source, &destination),
+        }
+    }
+
+    /// Atomically update the fee and amount limits for a registered pair.
+    ///
+    /// The admin guard and pause guard run before any storage write. All
+    /// supplied values are validated before the old values are read or the
+    /// new values are written, so an invalid request cannot partially update
+    /// a pair. The `param_set` event carries both snapshots for indexers.
+    pub fn set_pair_parameters(
+        env: Env,
+        source: Symbol,
+        destination: Symbol,
+        parameters: PairParameters,
+    ) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env);
+        if parameters.fee_bps > MAX_FEE_BPS
+            || parameters.min_amount < 0
+            || parameters.max_amount <= 0
+            || parameters.min_amount > parameters.max_amount
+        {
+            panic_with_error!(&env, RouterError::InvalidParameterRange);
+        }
+        Self::require_pair_registered(&env, &source, &destination);
+
+        let old = Self::get_pair_parameters(env.clone(), source.clone(), destination.clone());
+        env.storage().persistent().set(
+            &DataKey::PairFeeBps(source.clone(), destination.clone()),
+            &parameters.fee_bps,
+        );
+        env.storage().persistent().set(
+            &DataKey::PairMinAmount(source.clone(), destination.clone()),
+            &parameters.min_amount,
+        );
+        env.storage().persistent().set(
+            &DataKey::PairMaxAmount(source.clone(), destination.clone()),
+            &parameters.max_amount,
+        );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairFeeBps(source.clone(), destination.clone()),
+        );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairMinAmount(source.clone(), destination.clone()),
+        );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairMaxAmount(source.clone(), destination.clone()),
+        );
+        env.events().publish(
+            (symbol_short!("param_set"),),
+            (source, destination, old, parameters),
+        );
     }
 
     /// Extended aggregate read including newer per-pair slots that were
@@ -6512,3 +6596,6 @@ mod test_compute_route_fee_keys {
 
 #[cfg(test)]
 mod admin_handover_tests;
+
+#[cfg(test)]
+mod pool_parameters_tests;

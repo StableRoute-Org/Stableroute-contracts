@@ -51,6 +51,8 @@ pub enum ErrorName {
     EmptyBatch,
     CooldownTooLarge,
     ZeroFeeCap,
+    InvalidAdminAddress,
+    InvalidParameterRange,
 }
 
 /// Metadata exposed by the read-only error catalog.
@@ -91,14 +93,16 @@ pub fn operation_for(error: RouterError) -> PoolOperation {
         | RouterError::NotInitialized
         | RouterError::NoPendingAdminTransfer
         | RouterError::NotPendingAdmin
-        | RouterError::TimelockNotElapsed => PoolOperation::Governance,
+        | RouterError::TimelockNotElapsed
+        | RouterError::InvalidAdminAddress => PoolOperation::Governance,
         RouterError::SourceEqualsDestination | RouterError::PairNotRegistered => {
             PoolOperation::Register
         }
         RouterError::FeeBpsTooHigh | RouterError::ZeroFeeCap => PoolOperation::ConfigureFee,
         RouterError::AmountMustBePositive
         | RouterError::AmountBelowMin
-        | RouterError::AmountAboveMax => PoolOperation::ConfigureBounds,
+        | RouterError::AmountAboveMax
+        | RouterError::InvalidParameterRange => PoolOperation::ConfigureBounds,
         RouterError::InsufficientLiquidity => PoolOperation::Compute,
         RouterError::MigrationVersionMismatch => PoolOperation::Migration,
         RouterError::ContractPaused | RouterError::ReentrantCall => PoolOperation::Compute,
@@ -110,7 +114,7 @@ pub fn operation_for(error: RouterError) -> PoolOperation {
 }
 
 /// Return the complete append-only error list in numeric order.
-pub const fn all_errors() -> [RouterError; 21] {
+pub const fn all_errors() -> [RouterError; 23] {
     [
         RouterError::AlreadyInitialized,
         RouterError::NotInitialized,
@@ -133,6 +137,8 @@ pub const fn all_errors() -> [RouterError; 21] {
         RouterError::EmptyBatch,
         RouterError::CooldownTooLarge,
         RouterError::ZeroFeeCap,
+        RouterError::InvalidAdminAddress,
+        RouterError::InvalidParameterRange,
     ]
 }
 
@@ -219,6 +225,18 @@ pub const fn descriptor(error: RouterError) -> ErrorDescriptor {
             (ErrorName::CooldownTooLarge, ErrorClass::Limit, false, true)
         }
         RouterError::ZeroFeeCap => (ErrorName::ZeroFeeCap, ErrorClass::Input, false, true),
+        RouterError::InvalidAdminAddress => (
+            ErrorName::InvalidAdminAddress,
+            ErrorClass::Governance,
+            false,
+            false,
+        ),
+        RouterError::InvalidParameterRange => (
+            ErrorName::InvalidParameterRange,
+            ErrorClass::Input,
+            false,
+            true,
+        ),
     };
     ErrorDescriptor {
         code: error as u32,
@@ -253,6 +271,8 @@ pub const fn from_code(code: u32) -> Option<RouterError> {
         19 => Some(RouterError::EmptyBatch),
         20 => Some(RouterError::CooldownTooLarge),
         21 => Some(RouterError::ZeroFeeCap),
+        22 => Some(RouterError::InvalidAdminAddress),
+        23 => Some(RouterError::InvalidParameterRange),
         _ => None,
     }
 }
@@ -320,7 +340,7 @@ mod tests {
             assert_eq!(from_code(code), Some(error));
         }
         assert_eq!(from_code(0), None);
-        assert_eq!(from_code(22), None);
+        assert_eq!(from_code(24), None);
         assert_eq!(from_code(u32::MAX), None);
     }
 
@@ -386,7 +406,7 @@ mod tests {
     fn catalog_order_matches_wire_order() {
         let env = Env::default();
         let entries = catalog(&env);
-        assert_eq!(entries.len(), 21);
+        assert_eq!(entries.len(), 23);
         for (index, entry) in entries.iter().enumerate() {
             assert_eq!(entry.code, index as u32 + 1);
         }
@@ -394,7 +414,7 @@ mod tests {
 
     #[test]
     fn unknown_codes_are_not_coerced_into_known_errors() {
-        for code in [22, 42, 100, u32::MAX] {
+        for code in [24, 42, 100, u32::MAX] {
             assert!(from_code(code).is_none());
         }
     }
@@ -453,6 +473,8 @@ mod tests {
         assert_eq!(descriptor(RouterError::EmptyBatch).code, 19);
         assert_eq!(descriptor(RouterError::CooldownTooLarge).code, 20);
         assert_eq!(descriptor(RouterError::ZeroFeeCap).code, 21);
+        assert_eq!(descriptor(RouterError::InvalidAdminAddress).code, 22);
+        assert_eq!(descriptor(RouterError::InvalidParameterRange).code, 23);
         assert_eq!(
             descriptor(RouterError::BatchTooLarge).class,
             ErrorClass::Limit
