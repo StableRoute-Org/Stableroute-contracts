@@ -12,7 +12,8 @@ use soroban_sdk::{
     Bytes, BytesN, Env, Symbol, Vec,
 };
 
-mod error_taxonomy;
+mod pool_storage;
+use pool_storage::{bump_key_ttl, bump_pair_ttl};
 
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
@@ -448,10 +449,10 @@ impl StableRouteRouter {
     /// unregistered pair. This is the single source of truth for the
     /// [`DataKey::Pair`] sentinel value.
     fn read_pair_registered(env: &Env, source: &Symbol, destination: &Symbol) -> bool {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Pair(source.clone(), destination.clone()))
-            .unwrap_or(false)
+        let key = DataKey::Pair(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(false);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Read the per-pair fee in basis points from persistent storage.
@@ -460,10 +461,10 @@ impl StableRouteRouter {
     /// default for an unconfigured, registered pair. This is the single
     /// source of truth for the [`DataKey::PairFeeBps`] sentinel value.
     fn read_pair_fee_bps(env: &Env, source: &Symbol, destination: &Symbol) -> u32 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairFeeBps(source.clone(), destination.clone()))
-            .unwrap_or(0)
+        let key = DataKey::PairFeeBps(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(0);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Read the per-pair minimum routable amount from persistent storage.
@@ -472,10 +473,10 @@ impl StableRouteRouter {
     /// default. This is the single source of truth for the
     /// [`DataKey::PairMinAmount`] sentinel value.
     fn read_pair_min(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairMinAmount(source.clone(), destination.clone()))
-            .unwrap_or(0)
+        let key = DataKey::PairMinAmount(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(0);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Read the per-pair maximum routable amount from persistent storage.
@@ -484,10 +485,10 @@ impl StableRouteRouter {
     /// absent. This is the single source of truth for the
     /// [`DataKey::PairMaxAmount`] sentinel value.
     fn read_pair_max(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairMaxAmount(source.clone(), destination.clone()))
-            .unwrap_or(i128::MAX)
+        let key = DataKey::PairMaxAmount(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(i128::MAX);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Read the per-pair reported liquidity from persistent storage.
@@ -500,10 +501,10 @@ impl StableRouteRouter {
     /// Callers needing the unbounded semantic should read the slot
     /// directly with `unwrap_or(i128::MAX)`.
     fn read_pair_liquidity(env: &Env, source: &Symbol, destination: &Symbol) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairLiquidity(source.clone(), destination.clone()))
-            .unwrap_or(0)
+        let key = DataKey::PairLiquidity(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(0);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Read the per-pair route cooldown from persistent storage.
@@ -512,10 +513,10 @@ impl StableRouteRouter {
     /// documented default for an unconfigured pair. This is the single
     /// source of truth for the [`DataKey::PairCooldown`] sentinel value.
     fn read_pair_cooldown(env: &Env, source: &Symbol, destination: &Symbol) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
-            .unwrap_or(0)
+        let key = DataKey::PairCooldown(source.clone(), destination.clone());
+        let value = env.storage().persistent().get(&key).unwrap_or(0);
+        bump_key_ttl(env, &key);
+        value
     }
 
     /// Returns the router contract version.
@@ -804,6 +805,7 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+        bump_key_ttl(&env, &DataKey::Pair(source.clone(), destination.clone()));
         env.events()
             .publish((symbol_short!("pair_reg"),), (source, destination));
     }
@@ -835,6 +837,7 @@ impl StableRouteRouter {
             env.storage()
                 .persistent()
                 .set(&DataKey::Pair(source.clone(), destination.clone()), &true);
+            bump_key_ttl(&env, &DataKey::Pair(source.clone(), destination.clone()));
             env.events()
                 .publish((symbol_short!("pair_reg"),), (source, destination));
         }
@@ -958,6 +961,10 @@ impl StableRouteRouter {
         env.storage().persistent().set(
             &DataKey::PairCooldown(source.clone(), destination.clone()),
             &cooldown_secs,
+        );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairCooldown(source.clone(), destination.clone()),
         );
         env.events().publish(
             (symbol_short!("cd_set"),),
@@ -1182,6 +1189,10 @@ impl StableRouteRouter {
             &DataKey::PairLiquidity(source.clone(), destination.clone()),
             &liquidity,
         );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairLiquidity(source.clone(), destination.clone()),
+        );
         env.events().publish(
             (symbol_short!("liq_set"),),
             (source, destination, liquidity),
@@ -1212,6 +1223,10 @@ impl StableRouteRouter {
             &DataKey::PairMaxAmount(source.clone(), destination.clone()),
             &max_amount,
         );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairMaxAmount(source.clone(), destination.clone()),
+        );
         env.events().publish(
             (symbol_short!("max_set"),),
             (source, destination, max_amount),
@@ -1241,6 +1256,10 @@ impl StableRouteRouter {
         env.storage().persistent().set(
             &DataKey::PairMinAmount(source.clone(), destination.clone()),
             &min_amount,
+        );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairMinAmount(source.clone(), destination.clone()),
         );
         env.events().publish(
             (symbol_short!("min_set"),),
@@ -1346,6 +1365,10 @@ impl StableRouteRouter {
             &DataKey::PairFeeBps(source.clone(), destination.clone()),
             &fee_bps,
         );
+        bump_key_ttl(
+            &env,
+            &DataKey::PairFeeBps(source.clone(), destination.clone()),
+        );
         env.events()
             .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
     }
@@ -1371,6 +1394,10 @@ impl StableRouteRouter {
             env.storage().persistent().set(
                 &DataKey::PairFeeBps(source.clone(), destination.clone()),
                 &fee_bps,
+            );
+            bump_key_ttl(
+                &env,
+                &DataKey::PairFeeBps(source.clone(), destination.clone()),
             );
             env.events()
                 .publish((symbol_short!("fee_set"),), (source, destination, fee_bps));
@@ -1559,6 +1586,7 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .set(&route_at_key, &env.ledger().timestamp());
+        bump_pair_ttl(&env, &source, &destination);
 
         // Last use of source/destination — moved (consumed) rather than
         // cloned, saving one Symbol clone pair on the hot path.
