@@ -12,6 +12,8 @@ use soroban_sdk::{
     Bytes, BytesN, Env, Symbol, Vec,
 };
 
+mod error_taxonomy;
+
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -546,6 +548,14 @@ impl StableRouteRouter {
             max_batch_size: MAX_BATCH_SIZE,
             max_cooldown_secs: MAX_COOLDOWN_SECS,
         }
+    }
+
+    /// Return the append-only typed error catalog for SDK discovery.
+    ///
+    /// This read-only surface lets clients display exact negative-path codes
+    /// without copying the enum into a separate, drift-prone configuration.
+    pub fn get_error_catalog(env: Env) -> Vec<error_taxonomy::ErrorDescriptor> {
+        error_taxonomy::catalog(&env)
     }
 
     /// Migrate the schema from v1 to v2. Admin-gated; panics with
