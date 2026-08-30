@@ -316,6 +316,8 @@ pub enum RouterError {
     /// route free. Use [`StableRouteRouter::clear_max_fee_absolute`] to
     /// remove the cap entirely.
     ZeroFeeCap = 21,
+    /// An admin handover targeted the current admin or this contract itself.
+    InvalidAdminAddress = 22,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -668,9 +670,12 @@ impl StableRouteRouter {
     /// queued eta. No-op if none is pending.
     pub fn cancel_admin_transfer(env: Env) {
         Self::require_admin(&env);
+        let cancelled: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::PendingAdminEta);
         Self::bump_instance_ttl(&env);
+        env.events()
+            .publish((symbol_short!("cancelled"),), cancelled);
     }
 
     /// Read the pending admin if any.
@@ -724,7 +729,10 @@ impl StableRouteRouter {
     /// event carrying the new admin and the eta so watchers get a warning
     /// window before control can actually change hands.
     pub fn propose_admin_transfer(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
+        let admin = Self::require_admin(&env);
+        if new_admin == env.current_contract_address() || new_admin == admin {
+            panic_with_error!(&env, RouterError::InvalidAdminAddress);
+        }
         let delay: u64 = env
             .storage()
             .persistent()
@@ -6420,3 +6428,6 @@ mod test_compute_route_fee_keys {
         assert_eq!(remaining, 0);
     }
 }
+
+#[cfg(test)]
+mod admin_handover_tests;
