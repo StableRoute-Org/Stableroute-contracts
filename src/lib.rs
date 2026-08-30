@@ -1569,6 +1569,56 @@ impl StableRouteRouter {
         fee
     }
 
+    /// Compute fees for a bounded set of routes as one atomic operation.
+    ///
+    /// Every entry is preflighted before the first accounting write. The
+    /// existing single-route path then performs the canonical checks and emits
+    /// one `route` event per item. Soroban transaction atomicity means a later
+    /// failure rolls back earlier liquidity, counters, timestamps, and events.
+    pub fn compute_route_fees(env: Env, entries: Vec<(Symbol, Symbol, i128)>) -> Vec<i128> {
+        if entries.is_empty() {
+            panic_with_error!(&env, RouterError::EmptyBatch);
+        }
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, RouterError::BatchTooLarge);
+        }
+        Self::require_not_paused(&env);
+
+        // Validate all inputs and current liquidity before touching counters.
+        // The single route call repeats these checks at the effect boundary,
+        // protecting this invariant if the implementation evolves later.
+        for (source, destination, amount) in entries.iter() {
+            if amount <= 0 {
+                panic_with_error!(&env, RouterError::AmountMustBePositive);
+            }
+            Self::require_pair_registered(&env, &source, &destination);
+            if amount < Self::read_pair_min(&env, &source, &destination) {
+                panic_with_error!(&env, RouterError::AmountBelowMin);
+            }
+            if amount > Self::read_pair_max(&env, &source, &destination) {
+                panic_with_error!(&env, RouterError::AmountAboveMax);
+            }
+            if let Some(0) = env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+            {
+                panic_with_error!(&env, RouterError::InsufficientLiquidity);
+            }
+        }
+
+        let mut fees = Vec::new(&env);
+        for (source, destination, amount) in entries.iter() {
+            fees.push_back(Self::compute_route_fee(
+                env.clone(),
+                source,
+                destination,
+                amount,
+            ));
+        }
+        fees
+    }
+
     /// Compute a deterministic, direction-sensitive route identifier for a
     /// `(source, destination)` pair.
     ///
@@ -1640,6 +1690,9 @@ impl MaliciousReentryMock {
         router.compute_route_fee(&source, &destination, &amount);
     }
 }
+
+#[cfg(test)]
+mod batch_route_tests;
 
 #[cfg(test)]
 mod test {
