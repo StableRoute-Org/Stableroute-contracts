@@ -317,6 +317,8 @@ pub enum RouterError {
     /// route free. Use [`StableRouteRouter::clear_max_fee_absolute`] to
     /// remove the cap entirely.
     ZeroFeeCap = 21,
+    /// An admin handover targeted the current admin or this contract itself.
+    InvalidAdminAddress = 22,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -551,6 +553,14 @@ impl StableRouteRouter {
         }
     }
 
+    /// Return the append-only typed error catalog for SDK discovery.
+    ///
+    /// This read-only surface lets clients display exact negative-path codes
+    /// without copying the enum into a separate, drift-prone configuration.
+    pub fn get_error_catalog(env: Env) -> Vec<error_taxonomy::ErrorDescriptor> {
+        error_taxonomy::catalog(&env)
+    }
+
     /// Migrate the schema from v1 to v2. Admin-gated; panics with
     /// MigrationVersionMismatch on a non-v1 starting state. v2 readers
     /// default sensibly when their new slots are absent, so the body
@@ -661,9 +671,12 @@ impl StableRouteRouter {
     /// queued eta. No-op if none is pending.
     pub fn cancel_admin_transfer(env: Env) {
         Self::require_admin(&env);
+        let cancelled: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
         env.storage().persistent().remove(&DataKey::PendingAdminEta);
         Self::bump_instance_ttl(&env);
+        env.events()
+            .publish((symbol_short!("cancelled"),), cancelled);
     }
 
     /// Read the pending admin if any.
@@ -717,7 +730,10 @@ impl StableRouteRouter {
     /// event carrying the new admin and the eta so watchers get a warning
     /// window before control can actually change hands.
     pub fn propose_admin_transfer(env: Env, new_admin: Address) {
-        Self::require_admin(&env);
+        let admin = Self::require_admin(&env);
+        if new_admin == env.current_contract_address() || new_admin == admin {
+            panic_with_error!(&env, RouterError::InvalidAdminAddress);
+        }
         let delay: u64 = env
             .storage()
             .persistent()
@@ -1581,6 +1597,56 @@ impl StableRouteRouter {
         fee
     }
 
+    /// Compute fees for a bounded set of routes as one atomic operation.
+    ///
+    /// Every entry is preflighted before the first accounting write. The
+    /// existing single-route path then performs the canonical checks and emits
+    /// one `route` event per item. Soroban transaction atomicity means a later
+    /// failure rolls back earlier liquidity, counters, timestamps, and events.
+    pub fn compute_route_fees(env: Env, entries: Vec<(Symbol, Symbol, i128)>) -> Vec<i128> {
+        if entries.is_empty() {
+            panic_with_error!(&env, RouterError::EmptyBatch);
+        }
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, RouterError::BatchTooLarge);
+        }
+        Self::require_not_paused(&env);
+
+        // Validate all inputs and current liquidity before touching counters.
+        // The single route call repeats these checks at the effect boundary,
+        // protecting this invariant if the implementation evolves later.
+        for (source, destination, amount) in entries.iter() {
+            if amount <= 0 {
+                panic_with_error!(&env, RouterError::AmountMustBePositive);
+            }
+            Self::require_pair_registered(&env, &source, &destination);
+            if amount < Self::read_pair_min(&env, &source, &destination) {
+                panic_with_error!(&env, RouterError::AmountBelowMin);
+            }
+            if amount > Self::read_pair_max(&env, &source, &destination) {
+                panic_with_error!(&env, RouterError::AmountAboveMax);
+            }
+            if let Some(0) = env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::PairLiquidity(source.clone(), destination.clone()))
+            {
+                panic_with_error!(&env, RouterError::InsufficientLiquidity);
+            }
+        }
+
+        let mut fees = Vec::new(&env);
+        for (source, destination, amount) in entries.iter() {
+            fees.push_back(Self::compute_route_fee(
+                env.clone(),
+                source,
+                destination,
+                amount,
+            ));
+        }
+        fees
+    }
+
     /// Compute a deterministic, direction-sensitive route identifier for a
     /// `(source, destination)` pair.
     ///
@@ -1652,6 +1718,9 @@ impl MaliciousReentryMock {
         router.compute_route_fee(&source, &destination, &amount);
     }
 }
+
+#[cfg(test)]
+mod batch_route_tests;
 
 #[cfg(test)]
 mod test {
@@ -6440,3 +6509,6 @@ mod test_compute_route_fee_keys {
         assert_eq!(remaining, 0);
     }
 }
+
+#[cfg(test)]
+mod admin_handover_tests;
