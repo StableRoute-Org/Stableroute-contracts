@@ -41,6 +41,27 @@ pub struct PairInfoExt {
     pub volume: i128,
 }
 
+/// Result of a guarded swap accounting operation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapReceipt {
+    pub fee: i128,
+    pub version: u64,
+}
+
+/// Typed failures for the optimistic-concurrency swap boundary. The
+/// `VersionConflict` payload returns the version observed by the contract so
+/// a client can refresh and retry without guessing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SwapError {
+    VersionConflict(u64),
+    ContractPaused,
+    PairNotRegistered,
+    AmountMustBePositive,
+    VersionOverflow,
+}
+
 /// Aggregated read of the queued admin handover: the proposed pending
 /// admin and the earliest timestamp at which it may accept.
 ///
@@ -205,6 +226,9 @@ pub enum DataKey {
     /// seconds have elapsed since `PairLastRouteAt`. Capped at
     /// `MAX_COOLDOWN_SECS` (30 days). Defaults to `0` (disabled).
     PairCooldown(Symbol, Symbol),
+    /// Monotonic optimistic-concurrency version for the guarded swap API.
+    /// Absent means version zero; it is advanced only after a successful swap.
+    PairSwapVersion(Symbol, Symbol),
     /// Optional absolute per-route fee ceiling (singleton, `i128`,
     /// persistent). When set, the effective fee is `min(bps_fee, cap)`.
     /// Absent ↔ `None` (only the relative `MAX_FEE_BPS` bound applies).
@@ -511,6 +535,18 @@ impl StableRouteRouter {
         env.storage()
             .persistent()
             .get(&DataKey::PairCooldown(source.clone(), destination.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Read the optimistic-concurrency version for a pair. Version zero is
+    /// the stable default for pairs that have never completed a guarded swap.
+    fn read_swap_version(env: &Env, source: &Symbol, destination: &Symbol) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PairSwapVersion(
+                source.clone(),
+                destination.clone(),
+            ))
             .unwrap_or(0)
     }
 
@@ -914,6 +950,64 @@ impl StableRouteRouter {
         let fee = Self::apply_fee_cap(&env, fee);
         let fee = Self::apply_fee_floor(&env, fee);
         (fee, amount - fee)
+    }
+
+    /// Execute route accounting with an optimistic-concurrency guard.
+    ///
+    /// The caller reads `get_swap_version`, includes that value in the
+    /// transaction, and this method compares and updates the same persistent
+    /// slot in one invocation. Two transactions built from the same base
+    /// version cannot both commit: the first increments the version and the
+    /// second receives `SwapError::VersionConflict(current_version)`.
+    ///
+    /// This repository's router is deliberately accounting-only and does not
+    /// custody tokens. `swap` therefore delegates the existing fee/liquidity
+    /// accounting path after the version precondition succeeds, then commits
+    /// the version and receipt event as the final state transition.
+    pub fn swap(
+        env: Env,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+        expected_version: u64,
+    ) -> Result<SwapReceipt, SwapError> {
+        if Self::paused(&env) {
+            return Err(SwapError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(SwapError::AmountMustBePositive);
+        }
+        if !Self::read_pair_registered(&env, &source, &destination) {
+            return Err(SwapError::PairNotRegistered);
+        }
+
+        let version_key = DataKey::PairSwapVersion(source.clone(), destination.clone());
+        let current_version = Self::read_swap_version(&env, &source, &destination);
+        if expected_version != current_version {
+            return Err(SwapError::VersionConflict(current_version));
+        }
+        let next_version = current_version
+            .checked_add(1)
+            .ok_or(SwapError::VersionOverflow)?;
+
+        // `compute_route_fee` is the existing accounting operation. If any
+        // pair, liquidity, bound, cooldown, or reentrancy check fails, the
+        // invocation aborts before the version commit below.
+        let fee = Self::compute_route_fee(env.clone(), source.clone(), destination.clone(), amount);
+        env.storage().persistent().set(&version_key, &next_version);
+        env.events().publish(
+            (symbol_short!("swap_ver"),),
+            (source, destination, current_version, next_version),
+        );
+        Ok(SwapReceipt {
+            fee,
+            version: next_version,
+        })
+    }
+
+    /// Read the current optimistic-concurrency version for a pair.
+    pub fn get_swap_version(env: Env, source: Symbol, destination: Symbol) -> u64 {
+        Self::read_swap_version(&env, &source, &destination)
     }
 
     /// Returns the timestamp of the pair's most recent successful route.
@@ -6408,5 +6502,84 @@ mod test_compute_route_fee_keys {
             client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
         let remaining = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn guarded_swap_starts_at_zero_and_commits_next_version() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+
+        assert_eq!(
+            client.swap(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_i128,
+                &0,
+            ),
+            SwapReceipt { fee: 0, version: 1 }
+        );
+        assert_eq!(
+            client.get_swap_version(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            1
+        );
+    }
+
+    #[test]
+    fn guarded_swap_rejects_stale_version_without_route_side_effects() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.swap(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_i128,
+            &0,
+        );
+
+        assert_eq!(
+            client.try_swap(
+                &symbol_short!("USDC"),
+                &symbol_short!("EURC"),
+                &1_000_i128,
+                &0,
+            ),
+            Err(Ok(SwapError::VersionConflict(1)))
+        );
+        assert_eq!(
+            client.get_swap_version(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            1
+        );
+        assert_eq!(
+            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
+            1
+        );
+    }
+
+    #[test]
+    fn guarded_swap_versions_are_scoped_to_each_pair() {
+        let env = Env::default();
+        let (client, _admin) = setup_initialized(&env);
+        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
+        client.register_pair(&symbol_short!("EURC"), &symbol_short!("GBP"));
+        client.swap(
+            &symbol_short!("USDC"),
+            &symbol_short!("EURC"),
+            &1_000_i128,
+            &0,
+        );
+
+        assert_eq!(
+            client.get_swap_version(&symbol_short!("EURC"), &symbol_short!("GBP")),
+            0
+        );
+        assert!(client
+            .try_swap(
+                &symbol_short!("EURC"),
+                &symbol_short!("GBP"),
+                &1_000_i128,
+                &0,
+            )
+            .is_ok());
     }
 }
