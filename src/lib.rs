@@ -16,8 +16,6 @@ mod pool_storage;
 use pool_storage::{bump_key_ttl, bump_pair_ttl};
 mod error_taxonomy;
 
-mod error_taxonomy;
-
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +56,123 @@ pub struct PairParameters {
     pub fee_bps: u32,
     pub min_amount: i128,
     pub max_amount: i128,
+}
+
+/// Result of a guarded swap accounting operation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapReceipt {
+    pub fee: i128,
+    pub version: u64,
+}
+
+/// Typed failures for the optimistic-concurrency swap boundary. The
+/// `VersionConflict` payload returns the version observed by the contract so
+/// a client can refresh and retry without guessing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SwapError {
+    VersionConflict(u64),
+    ContractPaused,
+    PairNotRegistered,
+    AmountMustBePositive,
+    VersionOverflow,
+}
+
+impl TryFrom<soroban_sdk::Error> for SwapError {
+    type Error = soroban_sdk::Error;
+    #[inline(always)]
+    fn try_from(error: soroban_sdk::Error) -> Result<Self, soroban_sdk::Error> {
+        if error.is_type(soroban_sdk::xdr::ScErrorType::Contract) {
+            let code = error.get_code();
+            Ok(match code {
+                100 => SwapError::ContractPaused,
+                101 => SwapError::PairNotRegistered,
+                102 => SwapError::AmountMustBePositive,
+                103 => SwapError::VersionOverflow,
+                c if c >= 1000 => SwapError::VersionConflict((c - 1000) as u64),
+                _ => return Err(error),
+            })
+        } else {
+            Err(error)
+        }
+    }
+}
+
+impl TryFrom<&soroban_sdk::Error> for SwapError {
+    type Error = soroban_sdk::Error;
+    #[inline(always)]
+    fn try_from(error: &soroban_sdk::Error) -> Result<Self, soroban_sdk::Error> {
+        <_ as TryFrom<soroban_sdk::Error>>::try_from(*error)
+    }
+}
+
+impl From<SwapError> for soroban_sdk::Error {
+    #[inline(always)]
+    fn from(val: SwapError) -> soroban_sdk::Error {
+        <_ as From<&SwapError>>::from(&val)
+    }
+}
+
+impl From<&SwapError> for soroban_sdk::Error {
+    #[inline(always)]
+    fn from(val: &SwapError) -> soroban_sdk::Error {
+        let code = match val {
+            SwapError::ContractPaused => 100,
+            SwapError::PairNotRegistered => 101,
+            SwapError::AmountMustBePositive => 102,
+            SwapError::VersionOverflow => 103,
+            SwapError::VersionConflict(v) => 1000 + (*v as u32),
+        };
+        soroban_sdk::Error::from_contract_error(code)
+    }
+}
+
+impl TryFrom<soroban_sdk::InvokeError> for SwapError {
+    type Error = soroban_sdk::InvokeError;
+    #[inline(always)]
+    fn try_from(error: soroban_sdk::InvokeError) -> Result<Self, soroban_sdk::InvokeError> {
+        match error {
+            soroban_sdk::InvokeError::Abort => Err(error),
+            soroban_sdk::InvokeError::Contract(code) => Ok(match code {
+                100 => SwapError::ContractPaused,
+                101 => SwapError::PairNotRegistered,
+                102 => SwapError::AmountMustBePositive,
+                103 => SwapError::VersionOverflow,
+                c if c >= 1000 => SwapError::VersionConflict((c - 1000) as u64),
+                _ => return Err(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&soroban_sdk::InvokeError> for SwapError {
+    type Error = soroban_sdk::InvokeError;
+    #[inline(always)]
+    fn try_from(error: &soroban_sdk::InvokeError) -> Result<Self, soroban_sdk::InvokeError> {
+        <_ as TryFrom<soroban_sdk::InvokeError>>::try_from(*error)
+    }
+}
+
+impl From<SwapError> for soroban_sdk::InvokeError {
+    #[inline(always)]
+    fn from(val: SwapError) -> soroban_sdk::InvokeError {
+        <_ as From<&SwapError>>::from(&val)
+    }
+}
+
+impl From<&SwapError> for soroban_sdk::InvokeError {
+    #[inline(always)]
+    fn from(val: &SwapError) -> soroban_sdk::InvokeError {
+        let code = match val {
+            SwapError::ContractPaused => 100,
+            SwapError::PairNotRegistered => 101,
+            SwapError::AmountMustBePositive => 102,
+            SwapError::VersionOverflow => 103,
+            SwapError::VersionConflict(v) => 1000 + (*v as u32),
+        };
+        soroban_sdk::InvokeError::Contract(code)
+    }
 }
 
 /// Aggregated read of the queued admin handover: the proposed pending
@@ -593,6 +708,43 @@ impl StableRouteRouter {
     /// without copying the enum into a separate, drift-prone configuration.
     pub fn get_error_catalog(env: Env) -> Vec<error_taxonomy::ErrorDescriptor> {
         error_taxonomy::catalog(&env)
+    }
+
+    /// Migrate the pool storage schema to the target version in-place.
+    ///
+    /// Admin-guarded; requires admin authorization via [`Self::require_admin`].
+    /// Idempotent: if the contract is already at the target schema version,
+    /// this function completes safely as a no-op without re-emitting migration events.
+    /// Rejects non-admin callers and unexpected starting schema versions with
+    /// [`RouterError::MigrationVersionMismatch`].
+    /// Emits a `migrated` event recording `(from_version, to_version)`.
+    pub fn migrate(env: Env) {
+        Self::require_admin(&env);
+        let current: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+
+        const TARGET_SCHEMA_VERSION: u32 = 2;
+
+        if current == TARGET_SCHEMA_VERSION {
+            return;
+        }
+
+        if current != 1 {
+            panic_with_error!(&env, RouterError::MigrationVersionMismatch);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion, &TARGET_SCHEMA_VERSION);
+        bump_key_ttl(&env, &DataKey::SchemaVersion);
+
+        env.events().publish(
+            (symbol_short!("migrated"),),
+            (current, TARGET_SCHEMA_VERSION),
+        );
     }
 
     /// Migrate the schema from v1 to v2. Admin-gated; panics with
@@ -4039,7 +4191,7 @@ mod fee_arithmetic {
 #[cfg(test)]
 mod migration {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+    use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
     use soroban_sdk::IntoVal;
 
     fn setup(env: &Env) -> StableRouteRouterClient<'_> {
@@ -4092,6 +4244,128 @@ mod migration {
         env.register_at(&id, StableRouteRouter, (admin,));
         let client = StableRouteRouterClient::new(&env, &id);
         client.migrate_v1_to_v2();
+    }
+
+    #[test]
+    fn test_migrate_entrypoint_advances_version_and_emits_event() {
+        use soroban_sdk::TryFromVal;
+        let env = Env::default();
+        let client = setup(&env);
+
+        assert_eq!(client.get_schema_version(), 1);
+        client.migrate();
+
+        let events = env.events().all();
+        let evs = events.events();
+        assert_eq!(evs.len(), 1);
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &evs[0].body;
+        let soroban_sdk::xdr::ScVal::Symbol(raw_topic) = &body.topics[0] else {
+            panic!("expected symbol topic");
+        };
+        let topic = Symbol::try_from_val(&env, raw_topic).unwrap();
+        assert_eq!(topic, symbol_short!("migrated"));
+
+        let soroban_sdk::xdr::ScVal::Vec(Some(sc_vec)) = &body.data else {
+            panic!("expected vec in body.data");
+        };
+        assert_eq!(sc_vec.len(), 2);
+        assert_eq!(sc_vec[0], soroban_sdk::xdr::ScVal::U32(1));
+        assert_eq!(sc_vec[1], soroban_sdk::xdr::ScVal::U32(2));
+
+        assert_eq!(client.get_schema_version(), 2);
+    }
+
+    #[test]
+    fn test_migrate_entrypoint_is_idempotent_and_emits_no_duplicate_event() {
+        let env = Env::default();
+        let client = setup(&env);
+        client.migrate();
+        assert_eq!(env.events().all().events().len(), 1);
+        assert_eq!(client.get_schema_version(), 2);
+
+        // Second migration invocation must succeed as a safe no-op with 0 emitted events.
+        client.migrate();
+        assert_eq!(env.events().all().events().len(), 0);
+        assert_eq!(client.get_schema_version(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #13)")]
+    fn test_migrate_from_unexpected_version_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+
+        // Inject unexpected version in storage to test version gate
+        env.as_contract(&id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SchemaVersion, &999u32);
+        });
+
+        client.migrate();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_migrate_entrypoint_requires_admin_auth() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let id = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "__constructor",
+                args: (admin.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        env.register_at(&id, StableRouteRouter, (admin,));
+        let client = StableRouteRouterClient::new(&env, &id);
+        client.migrate();
+    }
+
+    #[test]
+    fn test_migrate_post_migration_invariants_hold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(&env, &id);
+
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_fee_bps(&src, &dst, &50);
+        client.set_pair_liquidity(&admin, &src, &dst, &100_000);
+        client.set_pair_cooldown(&src, &dst, &60);
+
+        let pre_quote = client.quote_route(&src, &dst, &10_000);
+        assert_eq!(pre_quote, (50, 9_950));
+
+        // Execute migration
+        client.migrate();
+
+        // Invariants verification
+        assert_eq!(client.get_schema_version(), 2);
+        assert!(client.is_pair_active(&src, &dst));
+        let info = client.get_pair_info_ext(&src, &dst);
+        assert!(info.registered);
+        assert_eq!(info.fee_bps, 50);
+        assert_eq!(info.liquidity, 100_000);
+        assert_eq!(info.cooldown_secs, 60);
+
+        // Routing operates correctly post-migration
+        let post_quote = client.quote_route(&src, &dst, &10_000);
+        assert_eq!(post_quote, pre_quote);
+
+        let fee = client.compute_route_fee(&src, &dst, &10_000);
+        assert_eq!(fee, 50);
+        let remaining_liq = client.get_pair_liquidity(&src, &dst);
+        assert_eq!(remaining_liq, 90_000);
     }
 }
 
@@ -6367,6 +6641,13 @@ mod test_compute_route_fee_keys {
         client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
         client.set_pair_fee_bps(&symbol_short!("USDC"), &symbol_short!("EURC"), &fee_bps);
         (client, admin)
+    }
+
+    fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        (StableRouteRouterClient::new(env, &contract_id), admin)
     }
 
     // ── Happy-path: basic fee calculation ──────────────────────────

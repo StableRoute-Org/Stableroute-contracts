@@ -65,7 +65,7 @@ persistent keys is the reference mitigation.
 | `MinFeeAbsolute` | `i128` | persistent | **Config** | `None` | `get_min_fee_absolute`, `apply_fee_floor` (in `compute_route_fee` and `quote_route`) | `set_min_fee_absolute` |
 | `Oracle` | `Address` | persistent | **Config** | `None` | `get_oracle`, `set_pair_liquidity` (dual-auth check) | `set_oracle`; removed by `remove_oracle` |
 | `TotalRoutesAllTime` | `u64` | persistent | **Hot** | `0` | `get_total_routes_all_time` | `compute_route_fee` (saturating `+1`) |
-| `SchemaVersion` | `u32` | persistent | **Static** | `1` (implicit v1) | `get_schema_version` | `migrate_v1_to_v2` |
+| `SchemaVersion` | `u32` | persistent | **Static** | `1` (implicit v1) | `get_schema_version` | `migrate`, `migrate_v1_to_v2` |
 | `ReentrancyLock` | `bool` | persistent | **Hot** | `false` | `enter_nonreentrant` | `enter_nonreentrant` (→ `true`), `exit_nonreentrant` (→ `false`) |
 
 ### Per-pair slots — `(Symbol, Symbol)`
@@ -132,8 +132,9 @@ persistent TTL):
 
 `version()` returns the compiled contract version (`ROUTER_V2`);
 `get_schema_version()` returns the persisted storage-layout version
-(defaults to `1`, advanced to `2` by `migrate_v1_to_v2`). The two are
-independent — see the migration entrypoints in `src/lib.rs`.
+(defaults to `1`, advanced to `2` by `migrate` or `migrate_v1_to_v2`). The two are
+independent — see the migration entrypoints in `src/lib.rs` and
+[`docs/POOL_STORAGE_MIGRATION.md`](./POOL_STORAGE_MIGRATION.md).
 
 ## Namespaced key policy
 

@@ -16,6 +16,7 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `version` | none | — | `Symbol` (`ROUTER_V2`) | — | — |
 | `get_schema_version` | none | — | `u32` | — | — |
 | `get_limits` | none | — | `RouterLimits` | — | — |
+| `migrate` | admin | — | — | `NotInitialized` (#2), `MigrationVersionMismatch` (#13) | `migrated(current, target)` |
 | `migrate_v1_to_v2` | admin | — | — | `NotInitialized` (#2), `MigrationVersionMismatch` (#13) | — |
 
 ## Admin / governance
@@ -108,6 +109,7 @@ payload tuple. Topic symbols are capped at 9 characters.
 | `metr_rm` | `(source, destination, route_count, volume): (Symbol, Symbol, u64, i128)` | `purge_pair_metrics` |
 | `pair_mrst` | `(source, destination): (Symbol, Symbol)` | `purge_pair_metrics` |
 | `tlock_set` | `(old_delay, new_delay): (u64, u64)` | `set_timelock` |
+| `migrated` | `(from_version, to_version): (u32, u32)` | `migrate` |
 
 ## Extended pair info (`PairInfoExt`)
 

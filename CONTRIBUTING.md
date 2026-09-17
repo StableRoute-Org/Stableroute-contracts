@@ -107,6 +107,7 @@ a short, abbreviated topic name.
 | `orac_rm` | `remove_oracle` | `removed: Option<Address>` |
 | `pair_mrst` | `purge_pair_metrics` | `(source, destination): (Symbol, Symbol)` |
 | `upgraded` | `upgrade` | `new_wasm_hash: BytesN<32>` |
+| `migrated` | `migrate` | `(from_version, to_version): (u32, u32)` |
 
 When adding a new topic, keep it short and match the existing style
 (`liq_used`, not `liquidity_debited`).

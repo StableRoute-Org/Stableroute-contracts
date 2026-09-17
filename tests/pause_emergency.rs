@@ -71,17 +71,29 @@ fn unpause_restores_the_route_mutation_boundary() {
 
 #[test]
 fn pause_transition_emits_an_event_for_each_state_change() {
+    use soroban_sdk::TryFromVal;
     let f = fixture();
-    let before = f.env.events().all().len();
+    let before = f.env.events().all().events().len();
     f.client.pause();
     f.client.unpause();
     let events = f.env.events().all();
 
-    assert_eq!(events.len(), before + 2);
-    let pause_event = events.get(before).unwrap();
-    let unpause_event = events.get(before + 1).unwrap();
-    assert_eq!(pause_event.1, (symbol_short!("paused"),));
-    assert_eq!(unpause_event.1, (symbol_short!("paused"),));
+    assert_eq!(events.events().len(), before + 2);
+    let pause_event = events.events().get(before).unwrap();
+    let unpause_event = events.events().get(before + 1).unwrap();
+    let soroban_sdk::xdr::ContractEventBody::V0(pause_body) = &pause_event.body;
+    let soroban_sdk::xdr::ScVal::Symbol(pause_raw_topic) = &pause_body.topics[0] else {
+        panic!("expected symbol topic");
+    };
+    let pause_topic = soroban_sdk::Symbol::try_from_val(&f.env, pause_raw_topic).unwrap();
+    assert_eq!(pause_topic, symbol_short!("paused"));
+
+    let soroban_sdk::xdr::ContractEventBody::V0(unpause_body) = &unpause_event.body;
+    let soroban_sdk::xdr::ScVal::Symbol(unpause_raw_topic) = &unpause_body.topics[0] else {
+        panic!("expected symbol topic");
+    };
+    let unpause_topic = soroban_sdk::Symbol::try_from_val(&f.env, unpause_raw_topic).unwrap();
+    assert_eq!(unpause_topic, symbol_short!("paused"));
 }
 
 #[test]

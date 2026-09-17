@@ -20,7 +20,7 @@ operational risk during deployments.
 | 1 | Pause the contract | Contract reports paused. |
 | 2 | Upgrade the contract WASM | Upgrade completes successfully. |
 | 3 | Verify deployment | New contract version is active. |
-| 4 | Execute `migrate_v1_to_v2` | Migration completes without error. |
+| 4 | Execute `migrate` (or legacy `migrate_v1_to_v2`) | Migration completes without error. |
 | 5 | Call `get_schema_version` | Returns the expected schema version. |
 | 6 | Unpause the contract | Normal operation resumes. |
 
@@ -29,9 +29,10 @@ allowing emergency WASM deployments while the contract remains paused.
 
 ## Schema version
 
-`migrate_v1_to_v2` updates the stored schema version from **1** to **2**.
-The migration validates the current schema version before applying any
-changes and rejects unexpected starting versions.
+`migrate` updates the stored schema version from **1** to **2** idempotently,
+renews persistent TTL via `bump_key_ttl`, and emits a `migrated` event recording
+`(1, 2)`. The migration validates the current schema version before applying any
+changes and rejects unexpected starting versions. See [POOL_STORAGE_MIGRATION.md](./POOL_STORAGE_MIGRATION.md) for details.
 
 | Stage | Expected `get_schema_version` |
 |-------|-------------------------------|
@@ -63,7 +64,7 @@ stellar contract upgrade \
 ```bash
 stellar contract invoke \
   --id <CONTRACT_ID> \
-  --fn migrate_v1_to_v2
+  --fn migrate
 ```
 
 ### Verify schema version

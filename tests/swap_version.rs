@@ -19,9 +19,8 @@ fn fixture() -> Fixture {
     let env = Box::leak(Box::new(Env::default()));
     env.mock_all_auths();
     let admin = Address::generate(env);
-    let contract = env.register_contract(None, StableRouteRouter);
+    let contract = env.register(StableRouteRouter, (admin.clone(),));
     let client = StableRouteRouterClient::new(env, &contract);
-    client.init(&admin);
     client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
     Fixture {
         env: env.clone(),
@@ -93,15 +92,21 @@ fn versions_do_not_leak_between_pairs() {
 
 #[test]
 fn successful_swap_emits_version_transition_event() {
+    use soroban_sdk::TryFromVal;
     let f = fixture();
-    let before = f.env.events().all().len();
+    let before = f.env.events().all().events().len();
     f.client
         .swap(&symbol_short!("USDC"), &symbol_short!("EURC"), &100, &0);
     let events = f.env.events().all();
 
-    assert_eq!(events.len(), before + 2);
-    let last = events.last().unwrap();
-    assert_eq!(last.1, (symbol_short!("swap_ver"),));
+    assert_eq!(events.events().len(), before + 2);
+    let last = events.events().last().unwrap();
+    let soroban_sdk::xdr::ContractEventBody::V0(body) = &last.body;
+    let soroban_sdk::xdr::ScVal::Symbol(raw_topic) = &body.topics[0] else {
+        panic!("expected symbol topic");
+    };
+    let topic = soroban_sdk::Symbol::try_from_val(&f.env, raw_topic).unwrap();
+    assert_eq!(topic, symbol_short!("swap_ver"));
 }
 
 #[test]
