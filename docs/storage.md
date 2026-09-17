@@ -84,6 +84,15 @@ matters: `(USDC, EURC)` and `(EURC, USDC)` are independent storage slots.
 | `PairRouteCount` | `u64` | persistent | **Hot** | `0` | `get_pair_route_count`, `get_pair_info_ext` | `compute_route_fee` (saturating `+1`); removed by `purge_pair_metrics` |
 | `PairVolume` | `i128` | persistent | **Hot** | `0` | `get_pair_volume`, `get_pair_info_ext` | `compute_route_fee` (saturating `+amount`); removed by `purge_pair_metrics` |
 | `PairCooldown` | `u64` | persistent | **Config** | `0` (disabled) | `get_pair_cooldown`, `get_pair_info_ext`, `compute_route_fee` (rate-limit gate) | `set_pair_cooldown`; cleared by `clear_pair_config` (`unregister_pair`) |
+| `PairSwapVersion` | `u64` | persistent | **Hot** | `0` | `get_swap_version`, `swap`, `settle_swap` | `swap`, `settle_swap` (`+1`) |
+
+### Per-swap settlement slots — `u64`
+
+Keyed by `swap_id: u64` to enforce once-only settlement and reentrancy protection.
+
+| DataKey | Value type | Tier | TTL class | Default when absent | Read by | Written by |
+|---|---|---|---|---|---|---|
+| `PoolSwapSettled` | `bool` | persistent | **Static** | `false` (unsettled) | `is_swap_settled`, `settle_swap`, `settle_pool_swap` | `settle_swap`, `settle_pool_swap` (`true` on once-only execution) |
 
 † **Liquidity default is context-dependent.** `get_pair_liquidity`,
 `get_pair_info`, `get_pair_info_ext`, and `is_pair_active` treat an absent

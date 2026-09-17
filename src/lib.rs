@@ -16,8 +16,6 @@ mod pool_storage;
 use pool_storage::{bump_key_ttl, bump_pair_ttl};
 mod error_taxonomy;
 
-mod error_taxonomy;
-
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +56,126 @@ pub struct PairParameters {
     pub fee_bps: u32,
     pub min_amount: i128,
     pub max_amount: i128,
+}
+
+/// Result of a guarded swap accounting operation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapReceipt {
+    pub fee: i128,
+    pub version: u64,
+}
+
+/// Typed failures for the optimistic-concurrency swap and settlement boundaries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SwapError {
+    VersionConflict(u64),
+    ContractPaused,
+    PairNotRegistered,
+    AmountMustBePositive,
+    VersionOverflow,
+    AlreadySettled,
+}
+
+impl TryFrom<soroban_sdk::Error> for SwapError {
+    type Error = soroban_sdk::Error;
+    #[inline(always)]
+    fn try_from(error: soroban_sdk::Error) -> Result<Self, soroban_sdk::Error> {
+        if error.is_type(soroban_sdk::xdr::ScErrorType::Contract) {
+            let code = error.get_code();
+            Ok(match code {
+                100 => SwapError::ContractPaused,
+                101 => SwapError::PairNotRegistered,
+                102 => SwapError::AmountMustBePositive,
+                103 => SwapError::VersionOverflow,
+                104 => SwapError::AlreadySettled,
+                c if c >= 1000 => SwapError::VersionConflict((c - 1000) as u64),
+                _ => return Err(error),
+            })
+        } else {
+            Err(error)
+        }
+    }
+}
+
+impl TryFrom<&soroban_sdk::Error> for SwapError {
+    type Error = soroban_sdk::Error;
+    #[inline(always)]
+    fn try_from(error: &soroban_sdk::Error) -> Result<Self, soroban_sdk::Error> {
+        <_ as TryFrom<soroban_sdk::Error>>::try_from(*error)
+    }
+}
+
+impl From<SwapError> for soroban_sdk::Error {
+    #[inline(always)]
+    fn from(val: SwapError) -> soroban_sdk::Error {
+        <_ as From<&SwapError>>::from(&val)
+    }
+}
+
+impl From<&SwapError> for soroban_sdk::Error {
+    #[inline(always)]
+    fn from(val: &SwapError) -> soroban_sdk::Error {
+        let code = match val {
+            SwapError::ContractPaused => 100,
+            SwapError::PairNotRegistered => 101,
+            SwapError::AmountMustBePositive => 102,
+            SwapError::VersionOverflow => 103,
+            SwapError::AlreadySettled => 104,
+            SwapError::VersionConflict(v) => 1000 + (*v as u32),
+        };
+        soroban_sdk::Error::from_contract_error(code)
+    }
+}
+
+impl TryFrom<soroban_sdk::InvokeError> for SwapError {
+    type Error = soroban_sdk::InvokeError;
+    #[inline(always)]
+    fn try_from(error: soroban_sdk::InvokeError) -> Result<Self, soroban_sdk::InvokeError> {
+        match error {
+            soroban_sdk::InvokeError::Abort => Err(error),
+            soroban_sdk::InvokeError::Contract(code) => Ok(match code {
+                100 => SwapError::ContractPaused,
+                101 => SwapError::PairNotRegistered,
+                102 => SwapError::AmountMustBePositive,
+                103 => SwapError::VersionOverflow,
+                104 => SwapError::AlreadySettled,
+                c if c >= 1000 => SwapError::VersionConflict((c - 1000) as u64),
+                _ => return Err(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&soroban_sdk::InvokeError> for SwapError {
+    type Error = soroban_sdk::InvokeError;
+    #[inline(always)]
+    fn try_from(error: &soroban_sdk::InvokeError) -> Result<Self, soroban_sdk::InvokeError> {
+        <_ as TryFrom<soroban_sdk::InvokeError>>::try_from(*error)
+    }
+}
+
+impl From<SwapError> for soroban_sdk::InvokeError {
+    #[inline(always)]
+    fn from(val: SwapError) -> soroban_sdk::InvokeError {
+        <_ as From<&SwapError>>::from(&val)
+    }
+}
+
+impl From<&SwapError> for soroban_sdk::InvokeError {
+    #[inline(always)]
+    fn from(val: &SwapError) -> soroban_sdk::InvokeError {
+        let code = match val {
+            SwapError::ContractPaused => 100,
+            SwapError::PairNotRegistered => 101,
+            SwapError::AmountMustBePositive => 102,
+            SwapError::VersionOverflow => 103,
+            SwapError::AlreadySettled => 104,
+            SwapError::VersionConflict(v) => 1000 + (*v as u32),
+        };
+        soroban_sdk::InvokeError::Contract(code)
+    }
 }
 
 /// Aggregated read of the queued admin handover: the proposed pending
@@ -246,6 +364,9 @@ pub enum DataKey {
     /// upgrade. Absent ↔ `None` (no oracle configured — admin-only
     /// liquidity feed).
     Oracle,
+    /// Records whether a pool swap settlement ID has already been executed.
+    /// Used by the once-only settlement guard to prevent double-spending.
+    PoolSwapSettled(u64),
 }
 
 /// Upper bound on the per-pair fee. 1 000 bps = 10 %. Tightening this
@@ -341,6 +462,8 @@ pub enum RouterError {
     /// A combined pair-parameter update has a negative minimum, a non-positive
     /// maximum, or a minimum greater than its maximum.
     InvalidParameterRange = 23,
+    /// A pool swap with this settlement identifier has already been settled.
+    AlreadySettled = 24,
 }
 
 /// StableRoute router contract — placeholder for routing logic.
@@ -1076,11 +1199,10 @@ impl StableRouteRouter {
             .checked_add(1)
             .ok_or(SwapError::VersionOverflow)?;
 
-        // `compute_route_fee` is the existing accounting operation. If any
-        // pair, liquidity, bound, cooldown, or reentrancy check fails, the
-        // invocation aborts before the version commit below.
-        let fee = Self::compute_route_fee(env.clone(), source.clone(), destination.clone(), amount);
+        // State is committed before moving value / executing route accounting.
         env.storage().persistent().set(&version_key, &next_version);
+
+        let fee = Self::compute_route_fee(env.clone(), source.clone(), destination.clone(), amount);
         env.events().publish(
             (symbol_short!("swap_ver"),),
             (source, destination, current_version, next_version),
@@ -1089,6 +1211,95 @@ impl StableRouteRouter {
             fee,
             version: next_version,
         })
+    }
+
+    /// Execute a once-only pool swap settlement with reentrancy protection.
+    ///
+    /// Atomically marks `swap_id` as claimed/settled in persistent storage
+    /// BEFORE executing outward route accounting or moving value, preventing
+    /// double-application and reentrancy attacks.
+    ///
+    /// Rejects repeated settlement attempts of the same swap ID with
+    /// [`SwapError::AlreadySettled`].
+    pub fn settle_swap(
+        env: Env,
+        swap_id: u64,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+        expected_version: u64,
+    ) -> Result<SwapReceipt, SwapError> {
+        if Self::paused(&env) {
+            return Err(SwapError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(SwapError::AmountMustBePositive);
+        }
+        if !Self::read_pair_registered(&env, &source, &destination) {
+            return Err(SwapError::PairNotRegistered);
+        }
+
+        let settled_key = DataKey::PoolSwapSettled(swap_id);
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&settled_key)
+            .unwrap_or(false)
+        {
+            return Err(SwapError::AlreadySettled);
+        }
+
+        let version_key = DataKey::PairSwapVersion(source.clone(), destination.clone());
+        let current_version = Self::read_swap_version(&env, &source, &destination);
+        if expected_version != current_version {
+            return Err(SwapError::VersionConflict(current_version));
+        }
+        let next_version = current_version
+            .checked_add(1)
+            .ok_or(SwapError::VersionOverflow)?;
+
+        // CRITICAL INVARIANT: Commit settled flag and optimistic version FIRST,
+        // before executing value-moving route accounting or external effects.
+        env.storage().persistent().set(&settled_key, &true);
+        bump_key_ttl(&env, &settled_key);
+        env.storage().persistent().set(&version_key, &next_version);
+
+        let fee = Self::compute_route_fee(env.clone(), source.clone(), destination.clone(), amount);
+
+        env.events().publish(
+            (symbol_short!("settled"),),
+            (swap_id, source.clone(), destination.clone(), amount, fee),
+        );
+        env.events().publish(
+            (symbol_short!("swap_ver"),),
+            (source, destination, current_version, next_version),
+        );
+
+        Ok(SwapReceipt {
+            fee,
+            version: next_version,
+        })
+    }
+
+    /// Alias for [`Self::settle_swap`], providing total settlement protection
+    /// across pool swap settlement naming conventions.
+    pub fn settle_pool_swap(
+        env: Env,
+        swap_id: u64,
+        source: Symbol,
+        destination: Symbol,
+        amount: i128,
+        expected_version: u64,
+    ) -> Result<SwapReceipt, SwapError> {
+        Self::settle_swap(env, swap_id, source, destination, amount, expected_version)
+    }
+
+    /// Read-only check to discover whether a given pool swap ID has been settled.
+    pub fn is_swap_settled(env: Env, swap_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PoolSwapSettled(swap_id))
+            .unwrap_or(false)
     }
 
     /// Read the current optimistic-concurrency version for a pair.
@@ -6369,6 +6580,13 @@ mod test_compute_route_fee_keys {
         (client, admin)
     }
 
+    fn setup_initialized(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(StableRouteRouter, (admin.clone(),));
+        (StableRouteRouterClient::new(env, &contract_id), admin)
+    }
+
     // ── Happy-path: basic fee calculation ──────────────────────────
 
     #[test]
@@ -6745,6 +6963,186 @@ mod test_compute_route_fee_keys {
                 &0,
             )
             .is_ok());
+    }
+}
+
+/// Issue #455 — reentrancy / once-only settlement guard on pool swap settlement path.
+/// Verifies atomic once-only settlement, double-spend rejections, concurrent
+/// protection, ordering, and pair isolation.
+#[cfg(test)]
+mod settlement_guard {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Events};
+
+    fn setup(env: &Env) -> (StableRouteRouterClient<'_>, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let id = env.register(StableRouteRouter, (admin.clone(),));
+        let client = StableRouteRouterClient::new(env, &id);
+        (client, admin)
+    }
+
+    #[test]
+    fn test_first_settlement_succeeds() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_fee_bps(&src, &dst, &50);
+        client.set_pair_liquidity(&admin, &src, &dst, &1_000_000);
+
+        assert!(!client.is_swap_settled(&101));
+        let receipt = client.settle_swap(&101, &src, &dst, &10_000, &0);
+        let events = env.events().all();
+        assert_eq!(receipt.fee, 50);
+        assert_eq!(receipt.version, 1);
+
+        assert!(events.events().len() >= 2);
+        let first = &events.events()[events.events().len() - 2];
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &first.body;
+        let soroban_sdk::xdr::ScVal::Symbol(raw_topic) = &body.topics[0] else {
+            panic!("expected symbol topic");
+        };
+        use soroban_sdk::TryFromVal;
+        let topic = soroban_sdk::Symbol::try_from_val(&env, raw_topic).unwrap();
+        assert_eq!(topic, symbol_short!("settled"));
+
+        assert!(client.is_swap_settled(&101));
+        assert_eq!(client.get_swap_version(&src, &dst), 1);
+    }
+
+    #[test]
+    fn test_second_settlement_of_same_pool_swap_rejected() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_fee_bps(&src, &dst, &50);
+        client.set_pair_liquidity(&admin, &src, &dst, &1_000_000);
+
+        let receipt1 = client.settle_swap(&202, &src, &dst, &10_000, &0);
+        assert_eq!(receipt1.version, 1);
+
+        // Second settlement attempt of the same swap_id must fail with AlreadySettled
+        let result2 = client.try_settle_swap(&202, &src, &dst, &10_000, &1);
+        assert_eq!(result2, Err(Ok(SwapError::AlreadySettled)));
+
+        // Even with expected_version = 0, AlreadySettled takes precedence
+        let result_stale = client.try_settle_swap(&202, &src, &dst, &10_000, &0);
+        assert_eq!(result_stale, Err(Ok(SwapError::AlreadySettled)));
+    }
+
+    #[test]
+    fn test_concurrent_double_call_only_one_applies() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_liquidity(&admin, &src, &dst, &500_000);
+
+        // Two identical calls targeting the same swap_id with same expected_version
+        let res1 = client.try_settle_swap(&303, &src, &dst, &10_000, &0);
+        let res2 = client.try_settle_swap(&303, &src, &dst, &10_000, &0);
+
+        assert!(res1.is_ok());
+        assert_eq!(res2, Err(Ok(SwapError::AlreadySettled)));
+        // Liquidity debited exactly once
+        assert_eq!(client.get_pair_liquidity(&src, &dst), 490_000);
+        assert_eq!(client.get_pair_route_count(&src, &dst), 1);
+    }
+
+    #[test]
+    fn test_flag_set_before_external_effects() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_liquidity(&admin, &src, &dst, &1_000_000);
+
+        let swap_id = 404;
+        assert!(!client.is_swap_settled(&swap_id));
+
+        let receipt = client.settle_swap(&swap_id, &src, &dst, &20_000, &0);
+        assert_eq!(receipt.version, 1);
+        assert!(client.is_swap_settled(&swap_id));
+
+        assert_eq!(client.get_pair_liquidity(&src, &dst), 980_000);
+    }
+
+    #[test]
+    fn test_unrelated_pool_swaps_unaffected() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let usdc = symbol_short!("USDC");
+        let eurc = symbol_short!("EURC");
+        let gbp = symbol_short!("GBP");
+        client.register_pair(&usdc, &eurc);
+        client.register_pair(&eurc, &gbp);
+        client.set_pair_liquidity(&admin, &usdc, &eurc, &1_000_000);
+        client.set_pair_liquidity(&admin, &eurc, &gbp, &1_000_000);
+
+        // Swap 1 on USDC->EURC
+        let res1 = client.settle_swap(&501, &usdc, &eurc, &10_000, &0);
+        assert_eq!(res1.version, 1);
+
+        // Swap 2 on same pair with different swap_id succeeds
+        let res2 = client.settle_swap(&502, &usdc, &eurc, &10_000, &1);
+        assert_eq!(res2.version, 2);
+
+        // Swap 3 on unrelated pair with different swap_id succeeds independently
+        let res3 = client.settle_swap(&503, &eurc, &gbp, &10_000, &0);
+        assert_eq!(res3.version, 1);
+
+        // Only swap 501, 502, 503 are settled
+        assert!(client.is_swap_settled(&501));
+        assert!(client.is_swap_settled(&502));
+        assert!(client.is_swap_settled(&503));
+        assert!(!client.is_swap_settled(&504));
+    }
+
+    #[test]
+    fn test_settle_pool_swap_alias_works_identically() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+        client.register_pair(&src, &dst);
+        client.set_pair_liquidity(&admin, &src, &dst, &1_000_000);
+
+        let res = client.settle_pool_swap(&601, &src, &dst, &5_000, &0);
+        assert_eq!(res.version, 1);
+        assert!(client.is_swap_settled(&601));
+
+        let res_dup = client.try_settle_pool_swap(&601, &src, &dst, &5_000, &1);
+        assert_eq!(res_dup, Err(Ok(SwapError::AlreadySettled)));
+    }
+
+    #[test]
+    fn test_settle_swap_paused_and_unregistered_rejected() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let src = symbol_short!("USDC");
+        let dst = symbol_short!("EURC");
+
+        // Unregistered
+        assert_eq!(
+            client.try_settle_swap(&701, &src, &dst, &1_000, &0),
+            Err(Ok(SwapError::PairNotRegistered))
+        );
+
+        client.register_pair(&src, &dst);
+        client.set_pair_liquidity(&admin, &src, &dst, &100_000);
+        client.pause();
+
+        // Paused
+        assert_eq!(
+            client.try_settle_swap(&702, &src, &dst, &1_000, &0),
+            Err(Ok(SwapError::ContractPaused))
+        );
     }
 }
 

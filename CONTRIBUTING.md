@@ -78,6 +78,9 @@ raised, matching the existing entries.
 | 19 | `EmptyBatch` | Batch with zero entries |
 | 20 | `CooldownTooLarge` | Cooldown exceeds `MAX_COOLDOWN_SECS` |
 | 21 | `ZeroFeeCap` | Fee cap of zero rejected by `set_max_fee_absolute` |
+| 22 | `InvalidAdminAddress` | New admin address is invalid or contract self |
+| 23 | `InvalidParameterRange` | Numeric parameter outside allowable range |
+| 24 | `AlreadySettled` | Swap ID has already been settled on-chain |
 
 ## Event topics must fit `symbol_short!` (≤ 9 characters)
 
@@ -96,6 +99,8 @@ a short, abbreviated topic name.
 | `liq_set` | `set_pair_liquidity` | `(source, destination, liquidity): (Symbol, Symbol, i128)` |
 | `liq_used` | `compute_route_fee` | `(source, destination, remaining): (Symbol, Symbol, i128)` |
 | `route` | `compute_route_fee` | `(source, destination, amount): (Symbol, Symbol, i128)` |
+| `settled` | `settle_swap`, `settle_pool_swap` | `(swap_id, source, destination, amount, fee): (u64, Symbol, Symbol, i128, i128)` |
+| `swap_ver` | `swap`, `settle_swap`, `settle_pool_swap` | `(source, destination, current_version, next_version): (Symbol, Symbol, u64, u64)` |
 | `unreg` | `unregister_pair` | `(source, destination): (Symbol, Symbol)` |
 | `cfg_clr` | `unregister_pair` | `(source, destination): (Symbol, Symbol)` |
 | `queued` | `propose_admin_transfer` | `(new_admin, eta): (Address, u64)` |

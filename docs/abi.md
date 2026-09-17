@@ -84,6 +84,16 @@ _pending_ = the proposed pending admin must sign · _none_ = no auth.
 | `get_total_routes_all_time` | none | — | `u64` | — | — |
 | `route_tag` | none | `source, destination: Symbol` | `(Symbol, Symbol)` | — | — |
 
+## Swaps & Settlement
+
+| Entrypoint | Auth | Params | Returns | Errors | Event |
+|-----------|------|--------|---------|--------|-------|
+| `swap` | none | `source, destination: Symbol, amount: i128, expected_version: u64` | `Result<SwapReceipt, SwapError>` | `ContractPaused` (103), `AmountMustBePositive` (106), `PairNotRegistered` (105), `VersionConflict` (101), `VersionOverflow` (102), `InsufficientLiquidity` (#12) | `route`, `swap_ver` |
+| `settle_swap` | none | `swap_id: u64, source, destination: Symbol, amount: i128, expected_version: u64` | `Result<SwapReceipt, SwapError>` | `ContractPaused` (103), `AmountMustBePositive` (106), `PairNotRegistered` (105), `AlreadySettled` (104 / #24), `VersionConflict` (101), `VersionOverflow` (102), `InsufficientLiquidity` (#12) | `settled`, `swap_ver` |
+| `settle_pool_swap` | none | `swap_id: u64, source, destination: Symbol, amount: i128, expected_version: u64` | `Result<SwapReceipt, SwapError>` | Same as `settle_swap` | `settled`, `swap_ver` |
+| `is_swap_settled` | none | `swap_id: u64` | `bool` | — | — |
+| `get_swap_version` | none | `source, destination: Symbol` | `u64` | — | — |
+
 ## Event catalog
 
 Every event is published with a single `symbol_short!` topic and a data
@@ -105,6 +115,8 @@ payload tuple. Topic symbols are capped at 9 characters.
 | `liq_set` | `(source, destination, liquidity): (Symbol, Symbol, i128)` | `set_pair_liquidity` |
 | `liq_used` | `(source, destination, remaining_liquidity): (Symbol, Symbol, i128)` | `compute_route_fee` when bounded liquidity is debited |
 | `route` | `(source, destination, amount): (Symbol, Symbol, i128)` | `compute_route_fee` |
+| `settled` | `(swap_id, source, destination, amount, fee): (u64, Symbol, Symbol, i128, i128)` | `settle_swap`, `settle_pool_swap` |
+| `swap_ver` | `(source, destination, current_version, next_version): (Symbol, Symbol, u64, u64)` | `swap`, `settle_swap`, `settle_pool_swap` |
 | `metr_rm` | `(source, destination, route_count, volume): (Symbol, Symbol, u64, i128)` | `purge_pair_metrics` |
 | `pair_mrst` | `(source, destination): (Symbol, Symbol)` | `purge_pair_metrics` |
 | `tlock_set` | `(old_delay, new_delay): (u64, u64)` | `set_timelock` |
