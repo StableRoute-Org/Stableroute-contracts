@@ -1,6 +1,13 @@
 # stableroute-contracts
 
-Soroban smart contracts for [StableRoute](https://github.com/your-org/stableroute) — Stellar liquidity routing protocol.
+## Live
+
+- **Website:** https://stableroute-frontend.vercel.app
+- **Docs:** https://stableroute-frontend.vercel.app/docs
+- **API:** https://stableroute-backend.vercel.app ([Swagger docs](https://stableroute-backend.vercel.app/docs))
+- **Contract (testnet):** [`CCKXEUALSDINT6FWCPZRK4BS5NJ5J5JBGM6GAKHSB6JAN7MOTWFI6IHD`](https://stellar.expert/explorer/testnet/contract/CCKXEUALSDINT6FWCPZRK4BS5NJ5J5JBGM6GAKHSB6JAN7MOTWFI6IHD)
+
+Soroban smart contracts for [StableRoute](https://github.com/StableRoute-Org) — Stellar liquidity routing protocol.
 
 ## What this repo contains
 
@@ -407,3 +414,23 @@ the stored `PairFeeBps` value.
 ## License
 
 MIT
+
+
+## Deployments
+
+| Contract | Network | Contract ID | Explorer |
+|----------|---------|-------------|----------|
+| StableRouteRouter (`ROUTER_V2`) | Stellar testnet | `CCKXEUALSDINT6FWCPZRK4BS5NJ5J5JBGM6GAKHSB6JAN7MOTWFI6IHD` | [stellar.expert](https://stellar.expert/explorer/testnet/contract/CCKXEUALSDINT6FWCPZRK4BS5NJ5J5JBGM6GAKHSB6JAN7MOTWFI6IHD) |
+
+- Admin: `GA7TXEBMEPQCLHIYCWDN7RKAO5IMRD2UV7O7TZXMEW6VZUMEXNR4XBB5`
+- Seeded pair: `USDC -> EURC` at 30 bps
+- Machine-readable record: [`deployments/testnet.json`](deployments/testnet.json)
+
+Redeploy:
+
+```bash
+cargo build --target wasm32v1-none --release
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/stableroute_contracts.wasm \
+  --source <key> --network testnet -- --admin <ADMIN_ADDRESS>
+```

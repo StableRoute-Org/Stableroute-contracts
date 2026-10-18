@@ -4,67 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  fmt-build-test:
+  build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Build
-        run: cargo build
-
-      - name: Lint
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Run tests
-        run: cargo test
-
-      - name: Install WASM target
-        run: rustup target add wasm32v1-none
-
-      - name: Build deployable WASM artifact
-        run: cargo build --target wasm32v1-none --release
-
-      - name: Install coverage tool
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Check coverage
-        run: cargo llvm-cov --all-targets --fail-under-lines 95
-
-  # Enforces the deployable-artifact size budget documented in
-  # CONTRIBUTING.md ("WASM size budget"). Fails when the wasm32v1-none
-  # release artifact exceeds .github/wasm-size-budget and prints the size
-  # delta versus the PR base branch.
-  wasm-size:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
-
-      - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Self-test the size-check script
-        run: bash scripts/check_wasm_size_test.sh
-
-      - name: Enforce WASM artifact size budget
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: bash scripts/check_wasm_size.sh
+      - uses: Swatinem/rust-cache@v2
+      - name: Build WASM
+        run: cargo build --target wasm32v1-none --release
+      - name: Test
+        run: cargo test

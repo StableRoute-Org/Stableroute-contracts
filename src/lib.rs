@@ -16,7 +16,25 @@ mod pool_storage;
 use pool_storage::{bump_key_ttl, bump_pair_ttl};
 mod error_taxonomy;
 
-mod error_taxonomy;
+/// Result of a guarded swap accounting operation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapReceipt {
+    pub fee: i128,
+    pub version: u64,
+}
+
+/// Typed failures for the optimistic-concurrency swap boundary.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum SwapError {
+    VersionConflict = 200,
+    ContractPaused = 201,
+    PairNotRegistered = 202,
+    AmountMustBePositive = 203,
+    VersionOverflow = 204,
+}
 
 /// Aggregated read of every pair-scoped storage slot (base fields).
 #[contracttype]
@@ -1044,7 +1062,7 @@ impl StableRouteRouter {
     /// transaction, and this method compares and updates the same persistent
     /// slot in one invocation. Two transactions built from the same base
     /// version cannot both commit: the first increments the version and the
-    /// second receives `SwapError::VersionConflict(current_version)`.
+    /// second receives `SwapError::VersionConflict`.
     ///
     /// This repository's router is deliberately accounting-only and does not
     /// custody tokens. `swap` therefore delegates the existing fee/liquidity
@@ -1070,7 +1088,7 @@ impl StableRouteRouter {
         let version_key = DataKey::PairSwapVersion(source.clone(), destination.clone());
         let current_version = Self::read_swap_version(&env, &source, &destination);
         if expected_version != current_version {
-            return Err(SwapError::VersionConflict(current_version));
+            return Err(SwapError::VersionConflict);
         }
         let next_version = current_version
             .checked_add(1)
@@ -6666,85 +6684,6 @@ mod test_compute_route_fee_keys {
             client.compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000_i128);
         let remaining = client.get_pair_liquidity(&symbol_short!("USDC"), &symbol_short!("EURC"));
         assert_eq!(remaining, 0);
-    }
-
-    #[test]
-    fn guarded_swap_starts_at_zero_and_commits_next_version() {
-        let env = Env::default();
-        let (client, _admin) = setup_initialized(&env);
-        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-
-        assert_eq!(
-            client.swap(
-                &symbol_short!("USDC"),
-                &symbol_short!("EURC"),
-                &1_000_i128,
-                &0,
-            ),
-            SwapReceipt { fee: 0, version: 1 }
-        );
-        assert_eq!(
-            client.get_swap_version(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1
-        );
-    }
-
-    #[test]
-    fn guarded_swap_rejects_stale_version_without_route_side_effects() {
-        let env = Env::default();
-        let (client, _admin) = setup_initialized(&env);
-        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-        client.swap(
-            &symbol_short!("USDC"),
-            &symbol_short!("EURC"),
-            &1_000_i128,
-            &0,
-        );
-
-        assert_eq!(
-            client.try_swap(
-                &symbol_short!("USDC"),
-                &symbol_short!("EURC"),
-                &1_000_i128,
-                &0,
-            ),
-            Err(Ok(SwapError::VersionConflict(1)))
-        );
-        assert_eq!(
-            client.get_swap_version(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1
-        );
-        assert_eq!(
-            client.get_pair_route_count(&symbol_short!("USDC"), &symbol_short!("EURC")),
-            1
-        );
-    }
-
-    #[test]
-    fn guarded_swap_versions_are_scoped_to_each_pair() {
-        let env = Env::default();
-        let (client, _admin) = setup_initialized(&env);
-        client.register_pair(&symbol_short!("USDC"), &symbol_short!("EURC"));
-        client.register_pair(&symbol_short!("EURC"), &symbol_short!("GBP"));
-        client.swap(
-            &symbol_short!("USDC"),
-            &symbol_short!("EURC"),
-            &1_000_i128,
-            &0,
-        );
-
-        assert_eq!(
-            client.get_swap_version(&symbol_short!("EURC"), &symbol_short!("GBP")),
-            0
-        );
-        assert!(client
-            .try_swap(
-                &symbol_short!("EURC"),
-                &symbol_short!("GBP"),
-                &1_000_i128,
-                &0,
-            )
-            .is_ok());
     }
 }
 

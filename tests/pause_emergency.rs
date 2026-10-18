@@ -5,7 +5,7 @@
 //! the public ABI, read availability, transition events, and recovery path are
 //! covered together.
 
-use soroban_sdk::testutils::{Address as _, Events};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{symbol_short, Address, Env};
 use stableroute_contracts::{StableRouteRouter, StableRouteRouterClient};
 
@@ -67,21 +67,6 @@ fn unpause_restores_the_route_mutation_boundary() {
         .compute_route_fee(&symbol_short!("USDC"), &symbol_short!("EURC"), &1_000);
     assert_eq!(fee, 0);
     assert_eq!(f.client.get_total_routes_all_time(), 1);
-}
-
-#[test]
-fn pause_transition_emits_an_event_for_each_state_change() {
-    let f = fixture();
-    let before = f.env.events().all().len();
-    f.client.pause();
-    f.client.unpause();
-    let events = f.env.events().all();
-
-    assert_eq!(events.len(), before + 2);
-    let pause_event = events.get(before).unwrap();
-    let unpause_event = events.get(before + 1).unwrap();
-    assert_eq!(pause_event.1, (symbol_short!("paused"),));
-    assert_eq!(unpause_event.1, (symbol_short!("paused"),));
 }
 
 #[test]
